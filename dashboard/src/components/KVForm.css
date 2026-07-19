@@ -1,0 +1,134 @@
+/* ============================================================================
+   KVForm.css — Operation panel styles
+   ============================================================================ */
+
+.kvform-wrapper {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.kvform-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.kvform-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.input-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: var(--space-1);
+  display: block;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.kvform-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.kvform-actions .btn {
+  flex: 1;
+  min-width: 80px;
+}
+
+/* Result display */
+.kvform-result {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  font-size: 13px;
+  animation: fade-up 0.25s ease;
+}
+
+.kvform-result.status-ok      { border-color: rgba(81, 207, 102, 0.3); }
+.kvform-result.status-error   { border-color: rgba(255, 107, 107, 0.3); }
+.kvform-result.status-not_found { border-color: rgba(252, 196, 25, 0.3); }
+
+.result-op-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-right: var(--space-2);
+  background: rgba(108, 99, 255, 0.2);
+  color: var(--color-accent-1);
+}
+
+.result-key {
+  font-family: var(--font-mono);
+  color: var(--color-accent-2);
+  font-weight: 500;
+}
+.result-value {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  word-break: break-all;
+  margin-top: var(--space-2);
+}
+.result-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: var(--space-1);
+}
+
+/* Operation History */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.02);
+  animation: fade-up 0.2s ease;
+}
+
+.history-op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 40px;
+  text-align: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.history-op.PUT    { background: rgba(81, 207, 102, 0.15);  color: var(--color-accent-4); }
+.history-op.GET    { background: rgba(0, 212, 255, 0.15);   color: var(--color-accent-2); }
+.history-op.DELETE { background: rgba(255, 107, 107, 0.15); color: var(--color-accent-3); }
+
+.history-key   { font-family: var(--font-mono); color: var(--color-text-secondary); flex: 1; }
+.history-time  { font-size: 10px; color: var(--color-text-muted); flex-shrink: 0; }
+.history-status-ok        { color: var(--color-accent-4); }
+.history-status-error     { color: var(--color-accent-3); }
+.history-status-not_found { color: var(--color-accent-warn); }

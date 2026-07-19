@@ -1,0 +1,79 @@
+/* ============================================================================
+   MetricsDashboard.css — Live engine metrics display
+   ============================================================================ */
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .metrics-grid { grid-template-columns: 1fr; }
+}
+
+/* Individual metric card */
+.metric-card {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--card-accent-1), var(--card-accent-2));
+  opacity: 0.8;
+}
+
+.metric-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.metric-value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--card-accent-1), var(--card-accent-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  transition: transform 0.2s ease;
+}
+
+.metric-sub {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Spark bar — visual fill showing usage vs threshold */
+.metric-bar-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: var(--space-2);
+}
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--card-accent-1), var(--card-accent-2));
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
