@@ -56,7 +56,7 @@ void KVStore::put(const Key& key, const Value& value) {
     wal_->append(KVRecord{RecordType::PUT, key, value});
     memtable_->put(key, value);
 
-    if (memtable_->should_flush()) {
+    if (memtable_->should_flush() || wal_->file_size() >= config_.memtable_flush_threshold_bytes) {
         trigger_flush();
     }
 }
@@ -95,7 +95,7 @@ bool KVStore::remove(const Key& key) {
     // while holding unique_lock).
     memtable_->remove(key);
 
-    if (memtable_->should_flush()) {
+    if (memtable_->should_flush() || wal_->file_size() >= config_.memtable_flush_threshold_bytes) {
         trigger_flush();
     }
     
