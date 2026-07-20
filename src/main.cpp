@@ -5,15 +5,25 @@
 #include <iostream>
 #include <memory>
 
-int main() {
+int main(int argc, char* argv[]) {
     std::cout << "Starting KVault Engine...\n";
 
     try {
         kvault::EngineConfig config;
         
+        std::string base_dir = "data"; // Portable default
+        
+        // Parse command line arguments
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--data-dir" && i + 1 < argc) {
+                base_dir = argv[++i];
+            }
+        }
+        
         // You can customize config here before passing it to KVStore
-        config.wal_directory = "data/wal";
-        config.sstable_directory = "data/sstables";
+        config.wal_directory = base_dir + "/wal";
+        config.sstable_directory = base_dir + "/sstables";
         config.server_port = 8080;
 
         auto store = std::make_shared<kvault::KVStore>(config);

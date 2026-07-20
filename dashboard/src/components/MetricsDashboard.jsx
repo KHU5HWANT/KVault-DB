@@ -9,7 +9,7 @@ import { useRef, useEffect, useState } from 'react'
 import './MetricsDashboard.css'
 
 // Flush threshold — should match EngineConfig::memtable_flush_threshold_bytes
-const MEMTABLE_THRESHOLD_BYTES = 4096
+const MEMTABLE_THRESHOLD_BYTES = 4 * 1024 * 1024; // 4 MB
 
 function formatBytes(bytes) {
   if (bytes === null || bytes === undefined) return '—'
