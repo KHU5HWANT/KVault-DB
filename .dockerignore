@@ -1,0 +1,22 @@
+# Build directory
+build/
+.cache/
+
+# Data directories (should start fresh in the container)
+data/
+*.sst
+*.log
+
+# Dashboard code (frontend will be hosted on Vercel)
+dashboard/
+node_modules/
+
+# Python scripts and docs
+*.py
+*.tex
+*.pdf
+__pycache__/
+
+# Git
+.git/
+.gitignore

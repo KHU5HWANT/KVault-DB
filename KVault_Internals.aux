@@ -1,0 +1,77 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Step 1: Foundation --- Core Types and Engine Configuration}{4}{section.1}\protected@file@percent }
+\newlabel{sec:types}{{1}{4}{Step 1: Foundation --- Core Types and Engine Configuration}{section.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Conceptual Overview}{4}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}The Building Process}{4}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}Implementation Details}{4}{subsection.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}Code \& Configuration}{4}{subsection.1.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {1}Core Types: \texttt  {include/kvault/types.hpp}}{4}{lstlisting.1}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {2}Engine Configuration: \texttt  {include/kvault/config.hpp} (excerpt)}{5}{lstlisting.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Step 2: The Probabilistic In-Memory Index --- The Skip List}{6}{section.2}\protected@file@percent }
+\newlabel{sec:skiplist}{{2}{6}{Step 2: The Probabilistic In-Memory Index --- The Skip List}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Conceptual Overview}{6}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}The Building Process}{6}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Implementation Details}{6}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Code \& Configuration}{6}{subsection.2.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {3}Skip List Node and Class Declaration: \texttt  {include/kvault/skiplist.hpp}}{6}{lstlisting.3}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4}Skip List Insert and Search: \texttt  {src/skiplist.cpp}}{7}{lstlisting.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Step 3: The In-Memory Write Buffer --- The MemTable}{8}{section.3}\protected@file@percent }
+\newlabel{sec:memtable}{{3}{8}{Step 3: The In-Memory Write Buffer --- The MemTable}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Conceptual Overview}{8}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}The Building Process}{9}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Implementation Details}{9}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Code \& Configuration}{9}{subsection.3.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {5}MemTable Core Logic: \texttt  {src/memtable.cpp}}{9}{lstlisting.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Step 4: Crash Resilience --- The Write-Ahead Log}{10}{section.4}\protected@file@percent }
+\newlabel{sec:wal}{{4}{10}{Step 4: Crash Resilience --- The Write-Ahead Log}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Conceptual Overview}{10}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}The Building Process}{10}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Implementation Details}{11}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Code \& Configuration}{11}{subsection.4.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {6}Compile-Time CRC32 Table and WAL Binary Format: \texttt  {src/wal.cpp}}{11}{lstlisting.6}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {7}WAL Append and Platform Sync: \texttt  {src/wal.cpp}}{12}{lstlisting.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Step 5: Read Optimization --- The Bloom Filter}{13}{section.5}\protected@file@percent }
+\newlabel{sec:bloom}{{5}{13}{Step 5: Read Optimization --- The Bloom Filter}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Conceptual Overview}{13}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}The Building Process}{13}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Implementation Details}{13}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Code \& Configuration}{13}{subsection.5.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {8}Bloom Filter Double Hashing: \texttt  {src/bloom\_filter.cpp}}{13}{lstlisting.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Step 6: Disk Persistence --- The SSTable Writer}{14}{section.6}\protected@file@percent }
+\newlabel{sec:sstable_writer}{{6}{14}{Step 6: Disk Persistence --- The SSTable Writer}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Conceptual Overview}{14}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}The Building Process}{14}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Implementation Details}{15}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Code \& Configuration}{15}{subsection.6.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {9}SSTable File Layout and Footer: \texttt  {include/kvault/sstable\_writer.hpp}}{15}{lstlisting.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Step 7: Reading from Disk --- The SSTable Reader}{16}{section.7}\protected@file@percent }
+\newlabel{sec:sstable_reader}{{7}{16}{Step 7: Reading from Disk --- The SSTable Reader}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Conceptual Overview}{16}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Implementation Details}{16}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Code \& Configuration}{16}{subsection.7.3}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {10}SSTable Search Strategy (conceptual from \texttt  {src/sstable\_reader.cpp})}{16}{lstlisting.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Step 8: Managing Generations --- The SSTable Manager}{17}{section.8}\protected@file@percent }
+\newlabel{sec:sstable_manager}{{8}{17}{Step 8: Managing Generations --- The SSTable Manager}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Conceptual Overview}{17}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Implementation Details}{17}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Code \& Configuration}{17}{subsection.8.3}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {11}SSTable Manager: Startup Scan and Cascading Read: \texttt  {src/sstable\_manager.cpp}}{17}{lstlisting.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Step 9: The Concurrent Engine Core --- KVStore}{18}{section.9}\protected@file@percent }
+\newlabel{sec:kvstore}{{9}{18}{Step 9: The Concurrent Engine Core --- KVStore}{section.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Conceptual Overview}{18}{subsection.9.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Implementation Details}{18}{subsection.9.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Code \& Configuration}{19}{subsection.9.3}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {12}Thread-Safe Write and Read Paths: \texttt  {src/kvstore.cpp}}{19}{lstlisting.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Step 10: Full-Stack Integration --- REST API and React Dashboard}{20}{section.10}\protected@file@percent }
+\newlabel{sec:api_dashboard}{{10}{20}{Step 10: Full-Stack Integration --- REST API and React Dashboard}{section.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.1}Conceptual Overview}{20}{subsection.10.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.2}The Building Process}{20}{subsection.10.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.3}Implementation Details}{21}{subsection.10.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.4}Code \& Configuration}{21}{subsection.10.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {13}REST API Route Definitions: \texttt  {src/api\_routes.cpp}}{21}{lstlisting.13}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {14}Server Entry Point: \texttt  {src/main.cpp}}{22}{lstlisting.14}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {15}React Metrics Hook: \texttt  {dashboard/src/hooks/useMetrics.js}}{23}{lstlisting.15}\protected@file@percent }
+\gdef \@abspage@last{23}

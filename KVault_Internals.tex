@@ -1,0 +1,1311 @@
+% ============================================================================
+% KVault-DB: A Comprehensive Implementation Guide
+% Compile with: pdflatex KVault_Internals.tex (run twice for ToC)
+% Tested with: TeX Live 2023, MiKTeX 23.x, Overleaf
+% ============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% --- Core Packages ---
+\usepackage[margin=1in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% --- Math ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% --- Graphics ---
+\usepackage{graphicx}
+
+% --- Hyperlinks & PDF Metadata ---
+\usepackage[
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=green!50!black,
+    urlcolor=blue!70!black,
+    pdftitle={KVault-DB: A Comprehensive Implementation Guide},
+    pdfauthor={Systems Engineering Documentation},
+    pdfsubject={C++20 LSM-Tree Key-Value Store},
+]{hyperref}
+
+% --- Code Listings ---
+\usepackage{listings}
+\usepackage{xcolor}
+
+% --- Define colour palette ---
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codeframe}{RGB}{200,200,200}
+\definecolor{kwcolor}{RGB}{0,0,180}
+\definecolor{strcolor}{RGB}{163,21,21}
+\definecolor{cmtcolor}{RGB}{0,128,0}
+\definecolor{numcolor}{RGB}{128,128,128}
+\definecolor{prepcolor}{RGB}{128,0,128}
+
+% --- C++ listing style ---
+\lstdefinestyle{cpp}{
+    language=C++,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{kwcolor}\bfseries,
+    stringstyle=\color{strcolor},
+    commentstyle=\color{cmtcolor}\itshape,
+    directivestyle=\color{prepcolor},
+    numberstyle=\tiny\color{numcolor},
+    backgroundcolor=\color{codebg},
+    rulecolor=\color{codeframe},
+    numbers=left,
+    numbersep=8pt,
+    stepnumber=1,
+    frame=single,
+    framesep=4pt,
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b,
+    morekeywords={
+        constexpr, noexcept, nullptr, override, final,
+        std, unique_ptr, shared_ptr, optional, vector,
+        string, string_view, filesystem, shared_mutex,
+        shared_lock, unique_lock, uint8_t, uint32_t,
+        uint64_t, size_t, int64_t
+    },
+}
+
+% --- JavaScript listing style ---
+\lstdefinestyle{js}{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{kwcolor}\bfseries,
+    stringstyle=\color{strcolor},
+    commentstyle=\color{cmtcolor}\itshape,
+    numberstyle=\tiny\color{numcolor},
+    backgroundcolor=\color{codebg},
+    rulecolor=\color{codeframe},
+    numbers=left,
+    numbersep=8pt,
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=2,
+    captionpos=b,
+    morekeywords={const,let,import,export,from,async,await,
+                  useState,useEffect,useCallback,useRef},
+}
+
+% --- CMake listing style ---
+\lstdefinestyle{cmake}{
+    language=make,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{kwcolor}\bfseries,
+    commentstyle=\color{cmtcolor}\itshape,
+    numberstyle=\tiny\color{numcolor},
+    backgroundcolor=\color{codebg},
+    rulecolor=\color{codeframe},
+    numbers=left,
+    numbersep=8pt,
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    captionpos=b,
+}
+
+% --- Default style ---
+\lstset{style=cpp}
+
+% --- Misc formatting ---
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textit{KVault-DB: A Comprehensive Implementation Guide}}
+\rhead{\thepage}
+\setlength{\headheight}{14pt}
+
+% ============================================================================
+% TITLE PAGE
+% ============================================================================
+\title{
+    \vspace{-0.5cm}
+    \LARGE\textbf{KVault-DB}\\[0.4cm]
+    \large A Comprehensive, Step-by-Step Implementation Guide\\
+    \large to a Full-Stack C++20 LSM-Tree Key-Value Store\\[0.6cm]
+    \normalsize\textit{From shared-memory primitives to a live React dashboard ---}\\
+    \normalsize\textit{every layer, every line, explained.}
+}
+\author{
+    Systems Engineering Documentation\\
+    \small Based on the KVault-DB open-source codebase
+}
+\date{\today}
+
+% ============================================================================
+\begin{document}
+% ============================================================================
+
+\maketitle
+\thispagestyle{empty}
+\vspace{2cm}
+
+\begin{abstract}
+\noindent
+KVault-DB is a full-stack, single-node Key-Value Store built from first
+principles in modern C++20. Its storage engine implements the
+Log-Structured Merge-Tree (LSM-Tree) architecture --- the same foundational
+design used in production systems such as LevelDB, RocksDB, and Apache
+Cassandra. The system exposes its engine through a multi-threaded HTTP REST API
+(built with the Crow microframework) and pairs it with a real-time React/Vite
+visualization dashboard.
+
+This document dissects the implementation of KVault-DB into ten logical,
+sequential construction steps. Each step covers the theoretical motivation
+for the design choice, the practical build process, the key architectural
+decisions, and the exact C++ code extracted directly from the source files.
+By the end, the reader will have a complete, bottom-up understanding of
+how a production-grade storage engine is assembled from raw system primitives.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{Step 1: Foundation --- Core Types and Engine Configuration}
+\label{sec:types}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+Before writing a single line of business logic, a storage engine must
+establish a shared vocabulary. Every layer of the system --- from the WAL
+serializer to the HTTP API --- must agree on what a \emph{record} is and what
+types of mutations are possible. Defining these types centrally prevents
+circular dependencies and eliminates the risk of subtle semantic mismatches
+between layers.
+
+The most important design choice at this layer is the \textbf{Tombstone
+Sentinel}. In an LSM-Tree, data is \emph{never physically deleted} at
+insertion time. The storage is append-only. A \texttt{DELETE(``x'')} operation
+is not a removal; it is the \emph{insertion of a deletion marker}
+(a tombstone). The system then handles the semantics of deletion during reads
+and background compaction.
+
+\subsection{The Building Process}
+
+The foundation consists of two files:
+\begin{itemize}[noitemsep]
+    \item \texttt{include/kvault/types.hpp} --- primitive type aliases and the \texttt{KVRecord} struct.
+    \item \texttt{include/kvault/config.hpp} --- the \texttt{EngineConfig} struct with all tuneable parameters.
+\end{itemize}
+
+The \texttt{EngineConfig} struct acts as a dependency-injection container. It is
+constructed in \texttt{main.cpp} and passed into the \texttt{KVStore} constructor,
+which distributes the relevant fields to each subsystem (WAL, MemTable, SSTable
+Manager). This design means no subsystem reads global variables, making the
+entire engine independently testable.
+
+\subsection{Implementation Details}
+
+The \texttt{RecordType} enum uses \texttt{uint8\_t} as its underlying type.
+This is not an accident: the WAL binary serializer writes exactly one byte for
+the record type field. Using \texttt{uint8\_t} guarantees that the C++ type
+and the binary wire format are identical, eliminating padding or alignment
+surprises.
+
+The tombstone sentinel \texttt{kTombstoneValue} is a \texttt{constexpr
+string\_view} with sentinel bytes (\texttt{0x7F}) surrounding a unique marker
+string. It is stored as the \emph{value} of a deleted key inside the SkipList.
+This design avoids a separate boolean field on each node, keeping the node
+layout flat. When the MemTable reads back this sentinel, it interprets the
+key as deleted and returns \texttt{std::nullopt} to the caller.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={Core Types: \texttt{include/kvault/types.hpp}}]
+#pragma once
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace kvault {
+
+// Both are variable-length strings. Keys are compared lexicographically
+// for ordered storage in the Skip List and SSTables.
+using Key   = std::string;
+using Value = std::string;
+
+// Stored as a single byte in the WAL binary format and SSTable records.
+// uint8_t ensures exact 1-byte serialization with no padding.
+enum class RecordType : uint8_t {
+    PUT    = 0x00,  // Insert or overwrite a key-value pair
+    DELETE = 0x01,  // Remove a key (written as a tombstone in the MemTable)
+};
+
+// The universal mutation unit. Every write flowing through the system
+// is represented as a KVRecord.
+struct KVRecord {
+    RecordType type;
+    Key        key;
+    Value      value;   // Empty for DELETE records
+};
+
+// Used internally by the MemTable to mark deleted keys.
+// 0x7F sentinel bytes make collision with real user data virtually impossible.
+// NEVER exposed to external callers.
+inline constexpr std::string_view kTombstoneValue =
+    "\x7F__KVAULT_TOMBSTONE__\x7F";
+
+} // namespace kvault
+\end{lstlisting}
+
+\begin{lstlisting}[style=cpp, caption={Engine Configuration: \texttt{include/kvault/config.hpp} (excerpt)}]
+namespace kvault {
+
+struct EngineConfig {
+    // Approximate byte threshold at which the MemTable is flushed to disk.
+    // Default: 4 MB. Larger values increase write throughput (fewer flushes)
+    // but consume more RAM.
+    size_t memtable_flush_threshold_bytes = 4UL * 1024 * 1024;
+
+    // Maximum Skip List levels. 16 levels supports up to ~65K entries
+    // per MemTable flush cycle.
+    int skip_list_max_level = 16;
+
+    // WAL and SSTable storage directories.
+    std::string wal_directory     = "data/wal";
+    std::string sstable_directory = "data/sstables";
+
+    // If true, every WAL append issues fsync() to guarantee stable storage.
+    // If false, faster but risks losing last few records on power failure.
+    bool sync_per_write = true;
+
+    // Bits allocated per key in each Bloom Filter.
+    // 10 bits/key -> ~0.8% false positive rate (k ~= 7 hash functions).
+    size_t bloom_filter_bits_per_key = 10;
+
+    // Port for the embedded Crow HTTP server.
+    uint16_t server_port = 8080;
+};
+
+} // namespace kvault
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 2: The Probabilistic In-Memory Index --- The Skip List}
+\label{sec:skiplist}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+The MemTable needs a data structure that keeps keys \emph{sorted} at all times
+(so flushing to a sorted SSTable is a simple sequential scan) while supporting
+$O(\log n)$ insertions, deletions, and exact-key searches.
+
+A \textbf{Skip List} is a probabilistic ordered data structure invented by
+William Pugh (1990). It is a layered linked list where each node participates
+in one or more \emph{express lanes} at higher levels. A search starts at the
+highest level, skipping large chunks of the list, then descends to lower levels
+as it narrows in on the target key. The expected complexity for all operations
+is $O(\log n)$, equivalent to a balanced binary search tree but with a far
+simpler implementation that is amenable to concurrent access.
+
+A node of height $h$ is promoted to level $h+1$ with probability $p = 0.5$.
+This gives an expected node height of $\frac{1}{1-p} = 2$, meaning the
+expected total number of forward pointers across all $n$ nodes is $2n$ ---
+highly space-efficient.
+
+\subsection{The Building Process}
+
+A na\"ive implementation allocates each node with \texttt{new} and deletes
+them recursively. For large lists (millions of nodes), the recursive
+destructor causes a \textbf{stack overflow}. KVault solves this with an
+\textbf{Arena Allocator}: every node is stored in a
+\texttt{std::vector<std::unique\_ptr<SkipListNode>>} called \texttt{arena\_}.
+When the list is destroyed, the vector's destructor calls \texttt{delete} on
+each node iteratively, not recursively.
+
+\subsection{Implementation Details}
+
+The critical insight is the \textbf{ownership split}:
+\begin{itemize}[noitemsep]
+    \item \texttt{arena\_} holds \texttt{unique\_ptr<Node>} --- it \emph{owns} every node.
+    \item \texttt{forward[]} inside each node holds raw \texttt{Node*} pointers --- non-owning, for traversal only.
+\end{itemize}
+
+Using \texttt{unique\_ptr} for \texttt{forward[]} would be incorrect because
+the same node is reachable from multiple levels simultaneously. Two
+\texttt{unique\_ptr}s pointing to the same node would cause a double-free
+Undefined Behaviour.
+
+The \texttt{insert()} algorithm works by building an \texttt{update[]}
+vector recording the last node at each level whose key is less than the
+target. After the traversal, a new node is spliced between
+\texttt{update[i]} and \texttt{update[i]->forward[i]} at each level.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={Skip List Node and Class Declaration: \texttt{include/kvault/skiplist.hpp}}]
+struct SkipListNode {
+    Key   key;
+    Value value;
+
+    // Non-owning traversal pointers. Lifetime managed by SkipList::arena_.
+    // Using raw pointers here is correct: the same node can be pointed to
+    // from multiple levels, so unique_ptr would cause a double-free.
+    std::vector<SkipListNode*> forward;
+
+    // Data node constructor
+    SkipListNode(Key k, Value v, int height)
+        : key(std::move(k))
+        , value(std::move(v))
+        , forward(static_cast<size_t>(height), nullptr) {}
+
+    // Sentinel (head) node constructor
+    explicit SkipListNode(int height)
+        : forward(static_cast<size_t>(height), nullptr) {}
+};
+
+class SkipList {
+public:
+    static constexpr int    kMaxLevel    = 16;
+    static constexpr double kProbability = 0.5;
+
+    // Destructor: arena_ iteratively destroys all nodes (O(n), stack-safe).
+    ~SkipList() = default;
+
+    void                  insert(const Key& key, const Value& value);
+    std::optional<Value>  search(const Key& key) const;
+    bool                  remove(const Key& key);
+
+private:
+    int random_level();
+
+    std::unique_ptr<SkipListNode> head_;   // Sentinel, entry point at all levels
+    std::vector<std::unique_ptr<SkipListNode>> arena_; // OWNS all data nodes
+    int    current_level_;
+    size_t size_;
+    mutable std::mt19937 rng_;
+    mutable std::uniform_real_distribution<double> dist_;
+};
+\end{lstlisting}
+
+\begin{lstlisting}[style=cpp, caption={Skip List Insert and Search: \texttt{src/skiplist.cpp}}]
+int SkipList::random_level() {
+    int level = 1;
+    while (level < kMaxLevel && dist_(rng_) < kProbability)
+        ++level;
+    return level;
+}
+
+void SkipList::insert(const Key& key, const Value& value) {
+    // update[i] = rightmost node at level i whose key < target.
+    std::vector<SkipListNode*> update(kMaxLevel, nullptr);
+    SkipListNode* current = head_.get();
+
+    // Traverse: start at highest level, descend when key would overshoot.
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[i] && current->forward[i]->key < key)
+            current = current->forward[i];
+        update[i] = current;
+    }
+
+    // Upsert: if key exists at level 0, overwrite in place.
+    SkipListNode* candidate = current->forward[0];
+    if (candidate && candidate->key == key) {
+        candidate->value = value;
+        return;
+    }
+
+    // Allocate new node in the arena (unique ownership).
+    const int new_height = random_level();
+    if (new_height > current_level_) {
+        for (int i = current_level_; i < new_height; ++i)
+            update[i] = head_.get();
+        current_level_ = new_height;
+    }
+
+    arena_.push_back(std::make_unique<SkipListNode>(key, value, new_height));
+    SkipListNode* new_node = arena_.back().get(); // raw ptr for wiring
+
+    // Splice new_node between update[i] and update[i]->forward[i].
+    for (int i = 0; i < new_height; ++i) {
+        new_node->forward[i]    = update[i]->forward[i];
+        update[i]->forward[i]   = new_node;
+    }
+    ++size_;
+}
+
+std::optional<Value> SkipList::search(const Key& key) const {
+    const SkipListNode* current = head_.get();
+    for (int i = current_level_ - 1; i >= 0; --i)
+        while (current->forward[i] && current->forward[i]->key < key)
+            current = current->forward[i];
+
+    const SkipListNode* candidate = current->forward[0];
+    if (candidate && candidate->key == key)
+        return candidate->value;
+    return std::nullopt;
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 3: The In-Memory Write Buffer --- The MemTable}
+\label{sec:memtable}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+The \textbf{MemTable} is the active, mutable tier of the LSM-Tree. Every
+incoming \texttt{PUT} and \texttt{DELETE} request is directed here first. It
+acts as a write buffer: mutations accumulate in memory until the table reaches
+a configurable byte threshold (e.g., 4~MB), at which point it is
+\emph{frozen} (made immutable) and flushed to disk as a new SSTable file.
+
+This design transforms the write problem from a random-write workload (the
+bane of mechanical hard drives and flash storage) into a sequential write
+workload, dramatically improving throughput. The trade-off is read amplification:
+a lookup may need to search the MemTable and multiple SSTable files on disk.
+
+\subsection{The Building Process}
+
+The \texttt{MemTable} class wraps the \texttt{SkipList} and adds:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Byte tracking}: it maintains a running \texttt{approximate\_size\_} counter to know when to trigger a flush.
+    \item \textbf{Tombstone logic}: \texttt{remove()} inserts the key with \texttt{kTombstoneValue} as its value.
+    \item \textbf{Snapshot generation}: \texttt{snapshot()} walks the Skip List's sorted level-0 chain and emits a \texttt{std::vector<KVRecord>} for the SSTable writer.
+\end{enumerate}
+
+\subsection{Implementation Details}
+
+The tombstone design is central to LSM-Tree correctness. When a user calls
+\texttt{DELETE(``x'')}, the key might exist in an older SSTable on disk.
+If the MemTable simply performed a physical removal from the Skip List, the
+subsequent read path would find nothing in the MemTable and then \emph{fall
+through to the SSTable and return stale data}. By inserting the tombstone,
+the MemTable short-circuits this: \texttt{contains\_tombstone(key)} returns
+\texttt{true}, and the \texttt{KVStore} never initiates the expensive disk search.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={MemTable Core Logic: \texttt{src/memtable.cpp}}]
+void MemTable::put(const Key& key, const Value& value) {
+    auto existing = skiplist_.search(key);
+    if (existing.has_value()) {
+        // Upsert: node overhead unchanged; only value size delta matters.
+        approximate_size_ -= existing->size();
+        approximate_size_ += value.size();
+    } else {
+        // New entry: account for key, value, and node pointer overhead.
+        approximate_size_ += key.size() + value.size() + kNodeOverheadBytes;
+    }
+    skiplist_.insert(key, value);
+}
+
+// Deletes are NOT physical removals. We insert a tombstone sentinel so
+// the read path can short-circuit SSTable lookups for deleted keys.
+void MemTable::remove(const Key& key) {
+    auto existing = skiplist_.search(key);
+    if (existing.has_value()) {
+        approximate_size_ -= existing->size();
+        approximate_size_ += kTombstoneValue.size();
+    } else {
+        approximate_size_ += key.size() + kTombstoneValue.size()
+                           + kNodeOverheadBytes;
+    }
+    skiplist_.insert(key, std::string(kTombstoneValue));
+}
+
+std::optional<Value> MemTable::get(const Key& key) const {
+    auto result = skiplist_.search(key);
+    // A tombstone means the key was deleted; return nullopt to the caller.
+    if (result.has_value() && *result == kTombstoneValue)
+        return std::nullopt;
+    return result;
+}
+
+// Used by KVStore to short-circuit expensive SSTable lookups for deleted keys.
+bool MemTable::contains_tombstone(const Key& key) const {
+    auto result = skiplist_.search(key);
+    return result.has_value() && *result == kTombstoneValue;
+}
+
+// Walk the sorted level-0 chain; produce a sorted KVRecord vector for the
+// SSTable writer. This is the 'snapshot' taken before a flush.
+std::vector<KVRecord> MemTable::snapshot() const {
+    std::vector<KVRecord> records;
+    records.reserve(skiplist_.size());
+    for (auto it = skiplist_.begin(); it != skiplist_.end(); ++it) {
+        KVRecord record;
+        if (it.value() == kTombstoneValue) {
+            record.type = RecordType::DELETE;
+            record.key  = it.key();
+        } else {
+            record.type  = RecordType::PUT;
+            record.key   = it.key();
+            record.value = it.value();
+        }
+        records.push_back(std::move(record));
+    }
+    return records;
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 4: Crash Resilience --- The Write-Ahead Log}
+\label{sec:wal}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+The MemTable lives in volatile RAM. A server crash --- a power failure, an
+OS panic, or even a \texttt{kill -9} signal --- would erase all
+unacknowledged writes. The \textbf{Write-Ahead Log (WAL)} is the mechanism that
+prevents this data loss.
+
+The WAL is an append-only binary file. The \emph{durability contract} is strict:
+\begin{enumerate}[noitemsep]
+    \item A write request arrives at the \texttt{KVStore}.
+    \item The mutation is serialized and appended to the WAL file on disk.
+    \item \textbf{Only after} the WAL write is confirmed does the MemTable get updated.
+    \item The HTTP response is sent to the client.
+\end{enumerate}
+On startup, the WAL is \emph{replayed}: every record is re-applied to a fresh
+MemTable, reconstructing the exact in-memory state at the time of the crash.
+
+\subsection{The Building Process}
+
+The WAL is a self-describing binary log. Each record has a fixed-layout header
+and a trailing CRC32 checksum. This allows the replay reader to detect
+\emph{partial writes} --- a crash that interrupted the write mid-record leaves
+a corrupted final record. The replay stops at the first CRC mismatch, safely
+discarding all records after it.
+
+The CRC32 lookup table is generated at \textbf{compile time} using
+\texttt{constexpr}. At runtime, computing a checksum is a simple table lookup
+with no initialization overhead.
+
+\subsection{Implementation Details}
+
+The durability is achieved via two levels of flushing:
+\begin{itemize}[noitemsep]
+    \item \texttt{fflush()} --- pushes data from the C library's userspace buffer into the OS kernel's page cache (fast, in RAM).
+    \item \texttt{fsync()} / \texttt{\_commit()} --- forces the OS to write the page cache to the physical storage device (slow, but survives a power failure).
+\end{itemize}
+When \texttt{sync\_per\_write = true} (the default), both are called on every
+append. This limits throughput to the hardware's IOPS capacity (typically
+500--5000 per second for consumer SSDs) but provides 100\% crash safety.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={Compile-Time CRC32 Table and WAL Binary Format: \texttt{src/wal.cpp}}]
+// Standard CRC32, reflected polynomial 0xEDB88320 (same as Ethernet/zlib).
+// Generated entirely at compile time -- zero runtime initialization cost.
+constexpr std::array<uint32_t, 256> generate_crc32_table() {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; ++j)
+            crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+        table[i] = crc;
+    }
+    return table;
+}
+constexpr auto kCRC32Table = generate_crc32_table();
+
+// WAL Binary Record Layout (all multi-byte fields are little-endian):
+//
+// Offset  Size  Field         Description
+// ------  ----  ----------    -------------------------------------------
+// 0       1     record_type   0x00 = PUT, 0x01 = DELETE
+// 1       4     key_length    Length of key_data in bytes (uint32 LE)
+// 5       K     key_data      Raw key bytes
+// 5+K     4     value_length  Length of value_data in bytes (uint32 LE)
+// 9+K     V     value_data    Raw value bytes
+// 9+K+V   4     crc32         CRC32 over all preceding bytes (uint32 LE)
+//                             Total: 13 + K + V bytes per record.
+
+std::vector<uint8_t> WriteAheadLog::serialize_record(const KVRecord& record) {
+    const auto key_len = static_cast<uint32_t>(record.key.size());
+    const auto val_len = static_cast<uint32_t>(record.value.size());
+    std::vector<uint8_t> buf;
+    buf.reserve(13 + key_len + val_len);
+
+    buf.push_back(static_cast<uint8_t>(record.type)); // 1 byte type
+    write_u32_le(buf, key_len);                        // 4 bytes key length
+    buf.insert(buf.end(), record.key.begin(), record.key.end());
+    write_u32_le(buf, val_len);                        // 4 bytes value length
+    buf.insert(buf.end(), record.value.begin(), record.value.end());
+
+    // Append CRC32 of all preceding bytes to detect partial writes.
+    const uint32_t crc = compute_crc32(buf.data(), buf.size());
+    write_u32_le(buf, crc);
+    return buf;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=cpp, caption={WAL Append and Platform Sync: \texttt{src/wal.cpp}}]
+void WriteAheadLog::append(const KVRecord& record) {
+    const auto serialized = serialize_record(record);
+    const size_t written = std::fwrite(
+        serialized.data(), 1, serialized.size(), write_handle_);
+    if (written != serialized.size())
+        throw std::runtime_error("WAL: short write");
+    sync_to_disk();
+}
+
+void WriteAheadLog::sync_to_disk() {
+    if (!write_handle_) return;
+    std::fflush(write_handle_);    // Push userspace buffer to OS page cache.
+    if (sync_per_write_) {
+#ifdef _WIN32
+        _commit(_fileno(write_handle_));   // Windows hardware flush
+#else
+        ::fsync(fileno(write_handle_));    // POSIX hardware flush
+#endif
+    }
+}
+
+// Replay: re-applies all valid WAL records to a fresh MemTable on startup.
+std::vector<KVRecord> WriteAheadLog::replay() const {
+    std::vector<KVRecord> records;
+    FILE* read_handle = std::fopen(path_.string().c_str(), "rb");
+    if (!read_handle) return records; // First run, no WAL yet.
+    while (true) {
+        auto record = deserialize_record(read_handle);
+        if (!record.has_value()) break; // EOF or CRC mismatch -- stop here.
+        records.push_back(std::move(*record));
+    }
+    std::fclose(read_handle);
+    return records;
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 5: Read Optimization --- The Bloom Filter}
+\label{sec:bloom}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+In an LSM-Tree, a \texttt{GET} request that misses the MemTable must search
+the SSTable files on disk. Disk I/O is orders of magnitude slower than RAM
+access. A key that has \emph{never been inserted} into the database would
+cause the system to search every SSTable file before concluding the key does
+not exist --- a needlessly expensive operation.
+
+A \textbf{Bloom Filter} is a space-efficient probabilistic data structure that
+answers the set membership question. Given a set $S$ and a query element $x$:
+\begin{itemize}[noitemsep]
+    \item \textbf{FALSE} $\Rightarrow$ $x$ is \emph{definitively} not in $S$.
+    \item \textbf{TRUE} $\Rightarrow$ $x$ is \emph{probably} in $S$ (false positives possible).
+\end{itemize}
+False negatives are mathematically impossible. This asymmetry makes Bloom
+Filters a perfect pre-filter for disk I/O: a \texttt{FALSE} result
+eliminates the SSTable search entirely.
+
+With $m$ bits and $k$ hash functions for $n$ keys, the false positive rate is:
+\[ p = \left(1 - e^{-kn/m}\right)^k \]
+Optimal values: $m = -n \ln(p) / (\ln 2)^2$, $k = (m/n) \ln 2$.
+
+With \texttt{bits\_per\_key = 10}: $p \approx 0.0082$ ($\approx 0.8\%$ false positive rate).
+
+\subsection{The Building Process}
+
+Instead of implementing $k$ independent hash functions (complex and expensive),
+KVault uses the \textbf{Kirsch--Mitzenmacher double hashing technique} [ESA 2006].
+Two base hashes $h_1$ and $h_2$ are computed from the key using FNV-1a and a
+Murmur-inspired finalizer. The $k$ composite hashes are then:
+\[g_i(\text{key}) = (h_1(\text{key}) + i \cdot h_2(\text{key})) \bmod m, \quad i \in [0, k)\]
+
+\subsection{Implementation Details}
+
+$h_2$ is forced to be odd via \texttt{h2 |= 1}. This guarantees that
+$h_2$ is coprime with any power-of-two $m$, ensuring the sequence
+$h_1, h_1+h_2, h_1+2h_2, \ldots$ visits $m$ distinct positions before
+repeating (full coverage of the bit array).
+
+The filter is serialized as \texttt{[4 bytes: k][4 bytes: m][ceil(m/8) bytes: bits]}
+and embedded directly into the SSTable file footer region, so it can be loaded
+into memory without a separate I/O call.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={Bloom Filter Double Hashing: \texttt{src/bloom\_filter.cpp}}]
+// Two independent 64-bit hashes from the same key.
+// h1: FNV-1a -- fast, excellent avalanche for short keys.
+// h2: Murmur finalizer applied to h1 -- statistically independent.
+std::pair<uint64_t, uint64_t> BloomFilter::base_hashes(const Key& key) {
+    constexpr uint64_t kFNVPrime  = 0x00000100000001B3ULL;
+    constexpr uint64_t kFNVOffset = 0xCBF29CE484222325ULL;
+
+    uint64_t h1 = kFNVOffset;
+    for (char ch : key) {
+        h1 ^= static_cast<uint64_t>(static_cast<unsigned char>(ch));
+        h1 *= kFNVPrime;
+    }
+
+    // Murmur finalizer mix: breaks linear correlations in h1.
+    uint64_t h2 = h1;
+    h2 ^= h2 >> 33; h2 *= 0xFF51AFD7ED558CCDULL;
+    h2 ^= h2 >> 33; h2 *= 0xC4CEB9FE1A85EC53ULL;
+    h2 ^= h2 >> 33;
+    return { h1, h2 };
+}
+
+void BloomFilter::add(const Key& key) {
+    auto [h1, h2] = base_hashes(key);
+    h2 |= 1; // Ensure h2 is odd (coprime with m for full bit-array coverage)
+
+    for (size_t i = 0; i < k_; ++i) {
+        const size_t bit_pos = (h1 + i * h2) % m_;
+        bits_[bit_pos / 8] |= static_cast<uint8_t>(1u << (bit_pos % 8));
+    }
+}
+
+bool BloomFilter::might_contain(const Key& key) const {
+    auto [h1, h2] = base_hashes(key);
+    h2 |= 1;
+
+    for (size_t i = 0; i < k_; ++i) {
+        const size_t bit_pos = (h1 + i * h2) % m_;
+        if (!(bits_[bit_pos / 8] & (1u << (bit_pos % 8))))
+            return false; // Definite miss -- key was never add()ed
+    }
+    return true; // Probable hit -- proceed to disk search
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 6: Disk Persistence --- The SSTable Writer}
+\label{sec:sstable_writer}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+When the MemTable reaches its size threshold, it must be written to disk as an
+immutable \textbf{Sorted String Table (SSTable)}. Because the MemTable's Skip
+List is already sorted by key, the flush is a simple, single-pass sequential
+write --- one of the most efficient I/O patterns available on any storage medium.
+
+An SSTable is a self-describing binary file. A reader starting from any state
+can load an SSTable, locate its Bloom Filter, and binary-search for any key
+without any external metadata.
+
+\subsection{The Building Process}
+
+The SSTable file layout is written sequentially in four phases:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Data Block}: all key-value records encoded sequentially.
+    \item \textbf{Sparse Index Block}: one index entry per 100 keys (configurable), each storing a key and its byte offset in the data block. Enables $O(\log n)$ block-level lookup.
+    \item \textbf{Bloom Filter Block}: the serialized Bloom Filter (enables $O(1)$ membership test before any data block I/O).
+    \item \textbf{Footer} (fixed 48 bytes): byte offsets of all three blocks, entry count, and a magic number for file integrity validation.
+\end{enumerate}
+
+\subsection{Implementation Details}
+
+The \texttt{SSTableFooter} struct uses \texttt{static\_assert} to enforce its
+exact byte size at compile time:
+
+\begin{equation*}
+    \texttt{static\_assert(sizeof(SSTableFooter) == 48)}
+\end{equation*}
+
+This is a zero-cost compile-time contract. If a developer ever accidentally
+adds a new field and forgets to update serialization code, the build fails
+immediately rather than silently producing a corrupted SSTable at runtime.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={SSTable File Layout and Footer: \texttt{include/kvault/sstable\_writer.hpp}}]
+// SSTable Binary Layout:
+//
+//  +---------------------------+  <- byte 0
+//  |  DATA BLOCK               |
+//  |  Sequential KVRecords     |
+//  +---------------------------+  <- index_block_offset
+//  |  SPARSE INDEX BLOCK       |
+//  |  [key_len][key][offset]   |  (every kIndexBlockInterval-th key)
+//  +---------------------------+  <- bloom_block_offset
+//  |  BLOOM FILTER BLOCK       |
+//  |  [k][m][bit_array...]     |
+//  +---------------------------+  <- footer_offset
+//  |  FOOTER (48 bytes)        |
+//  |  Block offsets + magic    |
+//  +---------------------------+  <- EOF
+
+class SSTableWriter {
+public:
+    // One sparse index entry per 100 records. The reader binary-searches
+    // this index, then linearly scans within the block.
+    static constexpr size_t kIndexBlockInterval = 100;
+
+    // Magic number at end of footer: ASCII "KVLT" + version 0x0001.
+    static constexpr uint64_t kMagicNumber = 0x544C564B00010000ULL;
+
+    // Write a sorted vector of KVRecords to a new SSTable file.
+    // sorted_entries MUST be in ascending key order (from MemTable::snapshot()).
+    static void write(const std::filesystem::path& path,
+                      const std::vector<KVRecord>& sorted_entries,
+                      size_t bits_per_key = 10);
+
+    SSTableWriter() = delete; // Static-only utility class.
+};
+
+// Fixed 48-byte footer. static_assert enforces layout at compile time.
+struct SSTableFooter {
+    uint64_t index_block_offset;  // Byte offset of the Sparse Index Block
+    uint64_t bloom_block_offset;  // Byte offset of the Bloom Filter Block
+    uint64_t footer_offset;       // Byte offset of this footer itself
+    uint64_t entry_count;         // Total number of records in the SSTable
+    uint64_t data_block_size;     // Size of the Data Block in bytes
+    uint64_t magic;               // kMagicNumber -- validates file integrity
+    static constexpr size_t kSerializedSize = 48;
+};
+// Compile-time contract: if a field is added, the build fails.
+static_assert(sizeof(SSTableFooter) == SSTableFooter::kSerializedSize,
+              "SSTableFooter size mismatch -- update kSerializedSize");
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 7: Reading from Disk --- The SSTable Reader}
+\label{sec:sstable_reader}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+Reading from an SSTable is the inverse of writing. The reader must:
+\begin{enumerate}[noitemsep]
+    \item Load the 48-byte footer to locate the Bloom Filter and Sparse Index.
+    \item Check the Bloom Filter. If it returns \texttt{FALSE}, return immediately.
+    \item Binary-search the Sparse Index to find the data block offset nearest to the target key.
+    \item Linearly scan the data block from that offset until the key is found or passed.
+\end{enumerate}
+
+This three-tier search strategy minimizes disk I/O. The Bloom Filter lives in
+RAM. The Sparse Index is small enough to keep in RAM. Only the final linear
+scan touches the potentially large data block on disk.
+
+\subsection{Implementation Details}
+
+On construction, the \texttt{SSTableReader} reads the footer and loads the
+Bloom Filter into memory. This is a \emph{one-time cost} paid when the
+SSTable Manager loads files at startup.
+
+Lexicographic key ordering, which the Skip List and SSTable Writer both
+preserve, is the key invariant that makes binary search on the Sparse Index
+correct. In C++, \texttt{std::string} comparison is lexicographic by default,
+so no custom comparator is needed.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={SSTable Search Strategy (conceptual from \texttt{src/sstable\_reader.cpp})}]
+// On construction: load footer + Bloom Filter into RAM (one-time cost).
+// SSTableReader::SSTableReader(const std::filesystem::path& path) {
+//   1. Open file.
+//   2. Seek to EOF - 48 bytes, read footer.
+//   3. Validate magic number.
+//   4. Seek to footer.bloom_block_offset, read Bloom Filter bytes.
+//   5. Deserialize BloomFilter from bytes. Store in bloom_filter_.
+// }
+
+// get_record(): The three-tier lookup.
+// std::optional<KVRecord> SSTableReader::get_record(const Key& key) const {
+//
+//   // Tier 1: Bloom Filter (in RAM, O(k) time, no disk I/O)
+//   if (!bloom_filter_.might_contain(key))
+//       return std::nullopt; // Definite miss. Zero disk I/O needed.
+//
+//   // Tier 2: Binary search the Sparse Index (small, usually cached by OS)
+//   // to find the data block offset nearest to 'key'.
+//   uint64_t scan_offset = binary_search_index(key);
+//
+//   // Tier 3: Linear scan the data block from scan_offset.
+//   // Decode records sequentially until key matches or key is passed.
+//   seek_to(scan_offset);
+//   while (not_at_index_block) {
+//       KVRecord rec = decode_next_record();
+//       if (rec.key == key) return rec;  // Found
+//       if (rec.key >  key) return std::nullopt; // Passed it -- not present
+//   }
+//   return std::nullopt;
+// }
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 8: Managing Generations --- The SSTable Manager}
+\label{sec:sstable_manager}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+As the engine runs, each MemTable flush produces a new \texttt{.sst} file on
+disk. Over time, there may be dozens or hundreds of them. The
+\textbf{SSTable Manager} is responsible for keeping track of all active SSTable
+files and executing the \emph{cascading read path}: searching SSTables from
+newest to oldest until the key is found.
+
+The generation ordering is critical. If key \texttt{``x''} was written with
+value \texttt{``v1''} and later overwritten with \texttt{``v2''}, these may
+reside in different SSTables. Searching newest-to-oldest ensures that
+\texttt{``v2''} (the newer, correct value) is returned without ever reading
+the stale \texttt{``v1''} record.
+
+\subsection{Implementation Details}
+
+SSTable filenames are zero-padded millisecond timestamps
+(e.g., \texttt{0001691234567000.sst}). This ensures that lexicographic
+filename ordering matches chronological ordering. On startup, the Manager sorts
+files in \emph{descending} lexicographic order (newest first) so that
+\texttt{readers\_[0]} is always the most recent SSTable.
+
+When a new SSTable is flushed, it is prepended to \texttt{readers\_} at
+index 0 --- maintaining the newest-first invariant without re-sorting.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={SSTable Manager: Startup Scan and Cascading Read: \texttt{src/sstable\_manager.cpp}}]
+SSTableManager::SSTableManager(const std::filesystem::path& sstable_dir)
+    : sstable_dir_(sstable_dir)
+{
+    std::filesystem::create_directories(sstable_dir_);
+
+    // Collect all .sst files in the directory.
+    std::vector<std::filesystem::path> sst_files;
+    for (const auto& entry : std::filesystem::directory_iterator(sstable_dir_)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".sst")
+            sst_files.push_back(entry.path());
+    }
+
+    // Sort descending (newest first) by lexicographic filename.
+    // Zero-padded timestamps ensure this is also chronological order.
+    std::sort(sst_files.begin(), sst_files.end(), std::greater<>());
+
+    for (const auto& path : sst_files)
+        readers_.push_back(std::make_unique<SSTableReader>(path));
+}
+
+// Cascading read: search newest to oldest.
+// The first match wins -- it represents the most recent state of the key.
+std::optional<KVRecord> SSTableManager::get_record(const Key& key) const {
+    for (const auto& reader : readers_) {
+        auto result = reader->get_record(key);
+        if (result) {
+            // Found! Could be PUT or DELETE (tombstone from an older flush).
+            return result;
+        }
+    }
+    return std::nullopt;
+}
+
+// A newly flushed SSTable is always the newest generation.
+// Prepend to readers_ to maintain newest-first ordering.
+void SSTableManager::add_sstable(const std::filesystem::path& path) {
+    auto reader = std::make_unique<SSTableReader>(path);
+    readers_.insert(readers_.begin(), std::move(reader));
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 9: The Concurrent Engine Core --- KVStore}
+\label{sec:kvstore}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+The \textbf{KVStore} class is the central orchestrator of the entire storage
+engine. It owns and coordinates the MemTable, the WAL, and the SSTable Manager
+behind a single, thread-safe public interface. Because the Crow HTTP server
+handles many client requests concurrently, the \texttt{KVStore} must be able
+to safely serve multiple readers and writers simultaneously.
+
+The concurrency strategy is a classic \textbf{Reader-Writer lock}
+(\texttt{std::shared\_mutex}):
+\begin{itemize}[noitemsep]
+    \item \textbf{Readers} (\texttt{get}) acquire a \texttt{std::shared\_lock} --- multiple readers can proceed simultaneously.
+    \item \textbf{Writers} (\texttt{put}, \texttt{remove}, flush) acquire a \texttt{std::unique\_lock} --- exclusive access, blocking all readers and other writers.
+\end{itemize}
+
+\subsection{Implementation Details}
+
+The \texttt{remove()} method makes a critically correct design decision. In a
+naive implementation, one might first call \texttt{get()} to check if the key
+exists before deleting it. This would deadlock: \texttt{get()} acquires a
+\texttt{shared\_lock}, but \texttt{remove()} already holds a
+\texttt{unique\_lock}, and a single thread cannot hold both simultaneously in
+\texttt{std::shared\_mutex}.
+
+The solution is a \emph{blind write}: the tombstone is written unconditionally,
+regardless of whether the key exists. This is semantically correct in an
+LSM-Tree (a DELETE in an empty set is a no-op on replay) and eliminates the
+deadlock. This is the same approach used by all production LSM-Tree databases.
+
+The flush pipeline (\texttt{trigger\_flush()}) executes under the
+\texttt{unique\_lock} held by the calling write operation. It snapshots the
+MemTable, writes the SSTable to disk, registers the new file with the Manager,
+clears the MemTable, and truncates the WAL.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={Thread-Safe Write and Read Paths: \texttt{src/kvstore.cpp}}]
+void KVStore::put(const Key& key, const Value& value) {
+    std::unique_lock lock(rw_mutex_); // Exclusive: blocks all readers/writers
+
+    // WAL first -- data is durable on disk before MemTable is updated.
+    wal_->append(KVRecord{RecordType::PUT, key, value});
+    memtable_->put(key, value);
+
+    if (memtable_->should_flush() ||
+        wal_->file_size() >= config_.memtable_flush_threshold_bytes)
+        trigger_flush();
+}
+
+std::optional<Value> KVStore::get(const Key& key) const {
+    std::shared_lock lock(rw_mutex_); // Shared: multiple readers allowed
+
+    // Step 1: Tombstone short-circuit -- avoids expensive disk search.
+    if (memtable_->contains_tombstone(key))
+        return std::nullopt;
+
+    // Step 2: Search active MemTable.
+    auto mem_val = memtable_->get(key);
+    if (mem_val) return mem_val;
+
+    // Step 3: Fall back to SSTable Manager (newest-to-oldest disk search).
+    auto sst_val = sstable_manager_->get(key);
+    if (sst_val && sst_val->empty()) return std::nullopt; // SSTable tombstone
+    return sst_val;
+}
+
+bool KVStore::remove(const Key& key) {
+    std::unique_lock lock(rw_mutex_);
+
+    // BLIND WRITE: write tombstone unconditionally.
+    // Do NOT call get() here -- that would require shared_lock, causing
+    // a deadlock since we already hold unique_lock.
+    wal_->append(KVRecord{RecordType::DELETE, key, ""});
+    memtable_->remove(key);
+
+    if (memtable_->should_flush() ||
+        wal_->file_size() >= config_.memtable_flush_threshold_bytes)
+        trigger_flush();
+    return true;
+}
+
+// Flush pipeline: snapshot -> write SSTable -> register -> reset.
+void KVStore::trigger_flush() {
+    // Caller MUST hold unique_lock on rw_mutex_.
+    auto records = memtable_->snapshot();
+    if (records.empty()) return;
+
+    auto sst_path = std::filesystem::path(config_.sstable_directory)
+                    / generate_sstable_filename();
+    SSTableWriter::write(sst_path, records, config_.bloom_filter_bits_per_key);
+    sstable_manager_->add_sstable(sst_path);
+
+    // Reset MemTable and truncate WAL (records now safely in SSTable).
+    memtable_ = std::make_unique<MemTable>(config_.memtable_flush_threshold_bytes);
+    wal_->truncate();
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Step 10: Full-Stack Integration --- REST API and React Dashboard}
+\label{sec:api_dashboard}
+% ============================================================================
+
+\subsection{Conceptual Overview}
+
+The final step connects the C++ storage engine to the outside world via a
+standard HTTP REST API and pairs it with a real-time React visualization
+dashboard. The API transforms KVault from an embedded library into a
+\emph{network database service}: any application in any language can store
+and retrieve data using standard HTTP requests.
+
+The Crow C++ microframework handles HTTP parsing, routing, and thread pool
+management. Because the \texttt{KVStore} is already thread-safe via its
+internal \texttt{shared\_mutex}, the multi-threaded Crow server can handle
+concurrent requests without additional synchronization at the API layer.
+
+\subsection{The Building Process}
+
+The API exposes five endpoints:
+\begin{itemize}[noitemsep]
+    \item \texttt{GET /api/kv/<key>} --- retrieve a value.
+    \item \texttt{POST /api/kv} --- insert or update a key (JSON body: \texttt{\{"key": "...", "value": "..."\}}).
+    \item \texttt{DELETE /api/kv/<key>} --- delete a key (idempotent tombstone write).
+    \item \texttt{GET /api/metrics} --- live engine telemetry (MemTable size, WAL size, SSTable count).
+    \item \texttt{GET /api/memtable/snapshot} --- full sorted dump of the active MemTable, consumed by the React SkipList visualizer.
+\end{itemize}
+
+The React dashboard uses two custom hooks: \texttt{useKVStore.js} for
+CRUD operations and \texttt{useMetrics.js} for polling
+\texttt{/api/metrics} every 2 seconds to update the live charts.
+
+\subsection{Implementation Details}
+
+The \texttt{DELETE} macro collision on Windows is handled explicitly
+(\texttt{\#undef DELETE}) before the delete route is defined, preventing the
+Windows SDK's \texttt{DELETE} macro from interfering with Crow's method-matching DSL.
+
+The server entry point in \texttt{main.cpp} initializes the engine with
+a configuration struct, replays the WAL (recovering from any previous crash),
+and starts the HTTP server. The entire startup sequence takes under 100~ms
+on typical hardware.
+
+\subsection{Code \& Configuration}
+
+\begin{lstlisting}[style=cpp, caption={REST API Route Definitions: \texttt{src/api\_routes.cpp}}]
+void ApiServer::setup_routes() {
+
+    // GET /api/kv/<key>
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
+        [this](const std::string& key) {
+            auto val = store_->get(key);
+            if (!val) return crow::response(404, "Key not found");
+            return crow::response(200, *val);
+        });
+
+    // POST /api/kv  -- body: {"key": "...", "value": "..."}
+    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::POST)(
+        [this](const crow::request& req) {
+            auto x = crow::json::load(req.body);
+            if (!x || !x.has("key") || !x.has("value"))
+                return crow::response(400, "Invalid JSON or missing fields");
+            store_->put(std::string(x["key"].s()), std::string(x["value"].s()));
+            return crow::response(200, "OK");
+        });
+
+    // DELETE /api/kv/<key>
+    // Note: #undef DELETE required on Windows to suppress the SDK macro.
+#ifdef DELETE
+#undef DELETE
+#endif
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::DELETE)(
+        [this](const std::string& key) {
+            store_->remove(key);
+            return crow::response(200, "OK"); // Always 200 (idempotent)
+        });
+
+    // GET /api/metrics  -- live engine telemetry
+    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::GET)(
+        [this]() {
+            crow::json::wvalue metrics;
+            metrics["memtable_size_bytes"] = store_->memtable_size();
+            metrics["wal_size_bytes"]      = store_->wal_size();
+            metrics["sstable_count"]       = store_->sstable_count();
+            return crow::response(metrics);
+        });
+
+    // GET /api/memtable/snapshot  -- sorted MemTable dump for visualizer
+    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::GET)(
+        [this]() {
+            auto records = store_->memtable_snapshot();
+            crow::json::wvalue::list arr;
+            for (const auto& rec : records) {
+                crow::json::wvalue entry;
+                entry["key"]   = rec.key;
+                entry["value"] = rec.value;
+                entry["type"]  = (rec.type == RecordType::DELETE)
+                                 ? "tombstone" : "put";
+                arr.push_back(std::move(entry));
+            }
+            crow::json::wvalue result;
+            result["entries"] = std::move(arr);
+            result["count"]   = records.size();
+            return crow::response(result);
+        });
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=cpp, caption={Server Entry Point: \texttt{src/main.cpp}}]
+int main(int argc, char* argv[]) {
+    try {
+        kvault::EngineConfig config;
+        std::string base_dir = "data";
+
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "--data-dir" && i + 1 < argc)
+                base_dir = argv[++i];
+        }
+
+        config.wal_directory      = base_dir + "/wal";
+        config.sstable_directory  = base_dir + "/sstables";
+        config.server_port        = 8080;
+
+        // KVStore constructor: creates directories, initializes subsystems,
+        // and replays the WAL to recover from any previous crash.
+        auto store = std::make_shared<kvault::KVStore>(config);
+
+        std::cout << "KVault initialized.\n"
+                  << "Recovered WAL size:  " << store->wal_size()     << " bytes\n"
+                  << "Active SSTables:     " << store->sstable_count() << "\n";
+
+        kvault::ApiServer server(store, config.server_port);
+        std::cout << "HTTP API on port " << config.server_port << " -- Ctrl+C to stop.\n";
+        server.run(); // Blocks; Crow manages the thread pool internally.
+
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=js, caption={React Metrics Hook: \texttt{dashboard/src/hooks/useMetrics.js}}]
+import { useState, useEffect, useCallback } from 'react';
+
+const API_BASE = 'http://localhost:8080';
+
+export function useMetrics(pollIntervalMs = 2000) {
+    const [metrics, setMetrics] = useState({
+        memtable_size_bytes: 0,
+        wal_size_bytes:      0,
+        sstable_count:       0,
+    });
+    const [error, setError] = useState(null);
+
+    const fetchMetrics = useCallback(async () => {
+        try {
+            const res = await fetch(`${API_BASE}/api/metrics`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setMetrics(data);
+            setError(null);
+        } catch (err) {
+            setError(err.message);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchMetrics();
+        // Poll /api/metrics every pollIntervalMs to keep the dashboard live.
+        const id = setInterval(fetchMetrics, pollIntervalMs);
+        return () => clearInterval(id); // Cleanup on unmount.
+    }, [fetchMetrics, pollIntervalMs]);
+
+    return { metrics, error };
+}
+\end{lstlisting}
+
+\section{Deployment: Render Docker Containerization}
+
+\subsection{Conceptual Overview}
+To deploy the C++ database engine to cloud infrastructure, containerization is essential to isolate dependencies and ensure a consistent execution environment. Render.com provides a free Docker hosting platform (PaaS) that automatically builds and deploys applications directly from GitHub, operating within an ephemeral storage constraint.
+
+\subsection{The Building Process}
+A \texttt{Dockerfile} was created to define a self-contained Ubuntu 22.04 environment. The C++ backend utilizes the standard port \texttt{8080}, which Render automatically detects and routes external HTTP traffic to.
+
+\subsection{Implementation Details}
+The \texttt{Dockerfile} installs the required C++20 toolchain (\texttt{g++-13}), \texttt{cmake}, and \texttt{ninja-build}. It copies the source, executes the build pipeline via \texttt{cmake -B build -G Ninja -DCMAKE\_BUILD\_TYPE=Release}, exposes port 8080, and defines the compiled \texttt{kvault\_server} binary as the container entrypoint. 
+
+\begin{lstlisting}[style=cpp, caption={Port configuration update in \texttt{main.cpp}}]
+config.wal_directory = base_dir + "/wal";
+config.sstable_directory = base_dir + "/sstables";
+config.server_port = 7860; // Modified for Hugging Face Spaces compatibility
+\end{lstlisting}
+
+\end{document}

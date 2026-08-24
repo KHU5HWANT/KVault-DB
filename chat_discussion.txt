@@ -1,0 +1,47 @@
+# Technical Discussion Log
+This file tracks important technical discussions, architectural decisions, and code analyses for the KVault-DB project.
+
+## [2026-08-24] Resume Optimization & Architecture Review
+- Reviewed KVault's core metrics: 74/74 GoogleTest cases in 1.58s, 20-thread stress test (5000 requests) showing 100% read consistency.
+- Validated exact algorithms used: Arena-allocated Skip List MemTable, double-hashed Bloom Filter (Kirsch-Mitzenmacher), compile-time CRC32 WAL validation.
+- Concluded that highlighting business impact and specific quantitative metrics (sub-100 ms recovery, ~0.8% false positive rate) using the Google XYZ formula produces the highest-value ATS resume bullets.
+
+## [2026-08-24] Deployment Strategy
+- Discussed deployment options for the C++ backend and React frontend.
+- **Frontend**: Recommended Vercel or Netlify for free, zero-config static hosting.
+- **Backend**: Recommended Fly.io (best for databases due to free persistent volumes) or Render (easy Docker deployment but ephemeral storage on free tier).
+- **Alternative**: GCP e2-micro / AWS EC2 free tier for full Linux VM control and persistent disks.
+- Next steps require creating a Dockerfile for the C++ server and updating CORS/API endpoints in the React frontend.
+
+## [2026-08-24] Deployment Alternatives
+- User requested alternatives to Render.com.
+- Suggested **Fly.io** as the top PaaS choice due to free persistent volumes.
+- Suggested **Oracle Cloud (OCI)** for the most powerful free VM (24GB RAM, 200GB storage).
+- Suggested **Koyeb** as a direct push-to-deploy PaaS alternative to Render, though it lacks persistent storage on the free tier.
+
+## [2026-08-24] Oracle Cloud Multi-Project Deployment
+- Confirmed that Oracle Cloud's Always Free tier is powerful enough to host 3+ backend projects simultaneously.
+- Suggested two architectures: (1) A single large 24GB RAM ARM instance running all 3 backends behind an Nginx reverse proxy, or (2) Three separate smaller VM instances (e.g., 8GB RAM each) for strict isolation.
+- Highlighted the 200GB block storage allowance which easily covers all databases.
+
+## [2026-08-24] Full-Stack Oracle Cloud Deployment & Frontend Linking
+- Clarified that moving a backend to a new provider requires updating the frontend's API URL environment variable to point to the new backend IP/domain.
+- Confirmed that Oracle Cloud can host BOTH the frontend and backend on the same VM using Nginx (serving static React files while proxying API routes).
+- Advised that while hosting both on Oracle is a great Linux/Nginx learning exercise, keeping the frontend on Vercel is often preferred for production due to its global Edge CDN speed.
+
+## [2026-08-24] Frontend URL Stability
+- Clarified that changing the backend hosting provider does NOT change the public-facing frontend URL (the site link) if the frontend remains hosted on Vercel/Netlify. Only the internal API URL in the frontend code changes.
+
+## [2026-08-24] Oracle Cloud Signup Info
+- Provided the user with the direct link to the Oracle Cloud Free Tier signup page.
+- Advised on the signup process, including the temporary credit card verification hold and ensuring they select 'Always Free' eligible resources during provisioning.
+
+## [2026-08-24] Hugging Face Spaces Deployment
+- User inquired about using Hugging Face Docker Spaces as a credit-card-free deployment alternative.
+- Detailed the free tier specs: 2 vCPUs, 16GB RAM, 50GB Ephemeral Disk, and unlimited public projects.
+- Explained the 'Sleep Mode' caveat (wipes data after inactivity) and the port requirement (must run on 7860).
+
+## [2026-08-24] Hugging Face Policy Update & Pivot
+- Discovered via user screenshot that Hugging Face now restricts new Docker Spaces to PRO (paid) accounts.
+- Because the user does not have a credit card, pivoted the deployment strategy back to Render.com.
+- Confirmed that the existing Dockerfile will work perfectly on Render, and they can host multiple free web services on a single Render account (sharing the 750 free hours/month pool).

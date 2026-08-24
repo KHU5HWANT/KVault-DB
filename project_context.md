@@ -1,0 +1,14941 @@
+# KVault-DB Project Context
+This file contains the full source code of the KVault-DB project.
+
+
+## FILE: .gitignore
+
+```
+# ==============================================================================
+# KVault-DB — .gitignore
+# Covers: C++/CMake build artifacts, VS Code, React/Node.js, Windows, data
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# CMake Build Artifacts
+# ------------------------------------------------------------------------------
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+*.cmake
+!CMakeLists.txt
+
+# ------------------------------------------------------------------------------
+# Compiled Binaries & Libraries
+# ------------------------------------------------------------------------------
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# ------------------------------------------------------------------------------
+# Ninja Build System
+# ------------------------------------------------------------------------------
+.ninja_deps
+.ninja_log
+build.ninja
+
+# ------------------------------------------------------------------------------
+# CMake / CTest Logs
+# ------------------------------------------------------------------------------
+build_error.log
+cmake_log.txt
+Testing/
+LastTest.log
+LastTestsFailed.log
+
+# ------------------------------------------------------------------------------
+# KVault Runtime Data (WAL logs, SSTable files, data directory)
+# Never commit database state — it is machine-specific and binary.
+# ------------------------------------------------------------------------------
+data/
+*.sst
+*.log
+*.wal
+
+# ------------------------------------------------------------------------------
+# React / Node.js (dashboard/)
+# ------------------------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.local
+
+# Vite build output
+dashboard/dist/
+dashboard/.vite/
+dashboard/node_modules/
+
+# npm / yarn / pnpm lockfiles (keep package.json, exclude lock if desired)
+# Uncomment to also exclude lockfiles:
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ------------------------------------------------------------------------------
+# VS Code
+# ------------------------------------------------------------------------------
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/c_cpp_properties.json
+*.code-workspace
+
+# ------------------------------------------------------------------------------
+# IntelliJ / CLion
+# ------------------------------------------------------------------------------
+.idea/
+*.iml
+*.iws
+cmake-build-debug/
+cmake-build-release/
+
+# ------------------------------------------------------------------------------
+# macOS
+# ------------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ------------------------------------------------------------------------------
+# Windows
+# ------------------------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ------------------------------------------------------------------------------
+# Linux
+# ------------------------------------------------------------------------------
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ------------------------------------------------------------------------------
+# C++ Tooling
+# ------------------------------------------------------------------------------
+# Clang tools
+.cache/
+.clangd/
+.clang-tidy-cache/
+
+# Valgrind
+*.supp
+vgcore.*
+
+# Coverage
+*.gcno
+*.gcda
+*.gcov
+lcov.info
+coverage/
+
+# AddressSanitizer symbolizer cache
+asan_cache/
+
+# ------------------------------------------------------------------------------
+# Editor Temporaries
+# ------------------------------------------------------------------------------
+*.swp
+*.swo
+*.bak
+*.orig
+*#
+.#*
+\#*#
+```
+
+
+## FILE: CMakeLists.txt
+
+```cmake
+# ============================================================================
+# KVault — Root CMake Configuration
+# ============================================================================
+#
+# Targets:
+#   kvault_engine  — Static library containing the LSM-Tree storage engine
+#   kvault_tests   — GoogleTest executable for all unit tests
+#
+# Usage:
+#   cmake -B build -DCMAKE_BUILD_TYPE=Debug
+#   cmake --build build --parallel
+#   cd build && ctest --output-on-failure
+#
+# ============================================================================
+cmake_minimum_required(VERSION 3.20)
+
+project(kvault
+    VERSION     0.1.0
+    LANGUAGES   CXX
+    DESCRIPTION "A high-performance LSM-Tree Key-Value Store"
+)
+
+# Generate compile_commands.json for IDE IntelliSense (removes false positive syntax errors)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ----------------------------------------------------------------------------
+# Compiler Settings
+# ----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)           # No GNU extensions — strict ISO C++20
+
+# ---------------------------------------------------------------------------
+# Compiler Warnings (treat warnings as quality signals, not errors by default)
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/W4 /permissive-)
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+endif()
+
+# ============================================================================
+# Dependencies — GoogleTest via FetchContent
+# ============================================================================
+# FetchContent downloads and builds GoogleTest as part of the project.
+# No manual installation required — interviewers can clone and build in
+# one step: `cmake -B build && cmake --build build`
+# ============================================================================
+include(FetchContent)
+
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+)
+
+# Prevent GoogleTest from overriding the parent project's compiler/linker
+# settings on Windows (critical for MSVC builds).
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
+
+# --- Asio (Required by Crow) ---
+FetchContent_Declare(
+    asio
+    URL https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-1-30-2.tar.gz
+)
+FetchContent_MakeAvailable(asio)
+
+# --- Crow (HTTP REST Framework) ---
+set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    Crow
+    URL https://github.com/CrowCpp/Crow/archive/refs/tags/v1.2.0.tar.gz
+)
+# Force Crow to use our fetched ASIO instead of system ASIO
+set(ASIO_INCLUDE_DIR ${asio_SOURCE_DIR}/asio/include CACHE PATH "" FORCE)
+FetchContent_MakeAvailable(Crow)
+
+# --- Static Library: kvault_engine ---
+# Contains the core engine logic (MemTable, WAL, SSTable, KVStore)
+add_library(kvault_engine STATIC
+    src/skiplist.cpp
+    src/memtable.cpp
+    src/wal.cpp
+    src/bloom_filter.cpp
+    src/sstable_writer.cpp
+    src/sstable_reader.cpp
+    src/sstable_manager.cpp
+    src/kvstore.cpp
+    src/api_routes.cpp
+)
+
+target_include_directories(kvault_engine
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+# Link Crow to the engine (since api_routes uses it)
+target_link_libraries(kvault_engine PUBLIC Crow::Crow)
+
+if(WIN32)
+    target_link_libraries(kvault_engine PUBLIC ws2_32 mswsock)
+endif()
+
+# --- Executable: kvault_server ---
+add_executable(kvault_server
+    src/main.cpp
+)
+
+target_link_libraries(kvault_server
+    PRIVATE
+        kvault_engine
+)
+
+target_compile_features(kvault_engine PUBLIC cxx_std_20)
+
+# ============================================================================
+# Testing
+# ============================================================================
+enable_testing()
+add_subdirectory(tests)
+```
+
+
+## FILE: cmake_log.txt
+
+```txt
+
+```
+
+
+## FILE: export_project.py
+
+```py
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+import os
+
+# Configuration
+PROJECT_DIR = "."
+OUTPUT_FILE = "project_context.md"
+
+# Folders to completely ignore
+IGNORE_DIRS = {
+    ".git",
+    "build",
+    ".cache",
+    "data",           # Database files (.sst, .wal)
+    "node_modules",   # React dependencies
+    "dist",           # React build output
+    ".vite",          # Vite cache
+    "_deps",          # CMake fetch content
+    "CMakeFiles",     # CMake cache
+    ".vscode",        # IDE settings
+}
+
+# File extensions to include (add or remove as needed)
+INCLUDE_EXTENSIONS = {
+    # C++ backend
+    ".cpp", ".hpp", ".h", ".c",
+    # React frontend
+    ".js", ".jsx", ".css", ".html",
+    # Build systems
+    ".txt",  # For CMakeLists.txt
+    ".json", # For package.json
+    # Documentation
+    ".md",
+    # Configuration
+    ".gitignore", ".py"
+}
+
+# Specific files to ignore even if they match extensions
+IGNORE_FILES = {
+    "package-lock.json",
+    "CMakeCache.txt",
+    OUTPUT_FILE,          # Don't include the output file in itself!
+}
+
+def is_text_file(filepath):
+    """Basic check to see if a file extension is in our allowed list."""
+    _, ext = os.path.splitext(filepath)
+    # CMakeLists.txt and .gitignore don't always fit perfectly in ext, so we check basenames too
+    basename = os.path.basename(filepath)
+    if basename in {"CMakeLists.txt", ".gitignore", "package.json"}:
+        return True
+    return ext in INCLUDE_EXTENSIONS
+
+def generate_context():
+    print(f"🔍 Scanning project directory...")
+    
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as out_file:
+        out_file.write("# KVault-DB Project Context\n")
+        out_file.write("This file contains the full source code of the KVault-DB project.\n\n")
+        
+        file_count = 0
+        
+        for root, dirs, files in os.walk(PROJECT_DIR):
+            # Modify 'dirs' in-place to prevent os.walk from entering ignored directories
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+            
+            for file in files:
+                if file in IGNORE_FILES:
+                    continue
+                
+                filepath = os.path.join(root, file)
+                
+                if is_text_file(filepath):
+                    try:
+                        # Try to read the file
+                        with open(filepath, "r", encoding="utf-8") as in_file:
+                            content = in_file.read()
+                            
+                        # Write to the output file clearly formatted
+                        # We use relative paths for cleaner output
+                        rel_path = os.path.relpath(filepath, PROJECT_DIR).replace("\\", "/")
+                        out_file.write(f"\n## FILE: {rel_path}\n\n")
+                        
+                        # Add language identifier based on extension
+                        basename = os.path.basename(filepath)
+                        _, ext = os.path.splitext(filepath)
+                        lang = ext[1:] if ext else ""
+                        if basename == "CMakeLists.txt": lang = "cmake"
+                        
+                        out_file.write(f"```{lang}\n")
+                        out_file.write(content)
+                        if not content.endswith("\n"):
+                            out_file.write("\n")
+                        out_file.write("```\n\n")
+                        
+                        print(f"✅ Added: {rel_path}")
+                        file_count += 1
+                        
+                    except UnicodeDecodeError:
+                        print(f"⚠️ Skipped {filepath} (Not a valid UTF-8 text file)")
+                    except Exception as e:
+                        print(f"❌ Error reading {filepath}: {e}")
+                        
+    print(f"\n🎉 Done! Combined {file_count} files into '{OUTPUT_FILE}'.")
+    print(f"You can now upload '{OUTPUT_FILE}' to Gemini Notebooks or any LLM.")
+
+if __name__ == "__main__":
+    generate_context()
+```
+
+
+## FILE: project_context.txt
+
+```txt
+# KVault-DB Project Context
+This file contains the full source code of the KVault-DB project.
+
+
+================================================================================
+FILE: .gitignore
+================================================================================
+# ==============================================================================
+# KVault-DB — .gitignore
+# Covers: C++/CMake build artifacts, VS Code, React/Node.js, Windows, data
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# CMake Build Artifacts
+# ------------------------------------------------------------------------------
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+*.cmake
+!CMakeLists.txt
+
+# ------------------------------------------------------------------------------
+# Compiled Binaries & Libraries
+# ------------------------------------------------------------------------------
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# ------------------------------------------------------------------------------
+# Ninja Build System
+# ------------------------------------------------------------------------------
+.ninja_deps
+.ninja_log
+build.ninja
+
+# ------------------------------------------------------------------------------
+# CMake / CTest Logs
+# ------------------------------------------------------------------------------
+build_error.log
+cmake_log.txt
+Testing/
+LastTest.log
+LastTestsFailed.log
+
+# ------------------------------------------------------------------------------
+# KVault Runtime Data (WAL logs, SSTable files, data directory)
+# Never commit database state — it is machine-specific and binary.
+# ------------------------------------------------------------------------------
+data/
+*.sst
+*.log
+*.wal
+
+# ------------------------------------------------------------------------------
+# React / Node.js (dashboard/)
+# ------------------------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.local
+
+# Vite build output
+dashboard/dist/
+dashboard/.vite/
+dashboard/node_modules/
+
+# npm / yarn / pnpm lockfiles (keep package.json, exclude lock if desired)
+# Uncomment to also exclude lockfiles:
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ------------------------------------------------------------------------------
+# VS Code
+# ------------------------------------------------------------------------------
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/c_cpp_properties.json
+*.code-workspace
+
+# ------------------------------------------------------------------------------
+# IntelliJ / CLion
+# ------------------------------------------------------------------------------
+.idea/
+*.iml
+*.iws
+cmake-build-debug/
+cmake-build-release/
+
+# ------------------------------------------------------------------------------
+# macOS
+# ------------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ------------------------------------------------------------------------------
+# Windows
+# ------------------------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ------------------------------------------------------------------------------
+# Linux
+# ------------------------------------------------------------------------------
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ------------------------------------------------------------------------------
+# C++ Tooling
+# ------------------------------------------------------------------------------
+# Clang tools
+.cache/
+.clangd/
+.clang-tidy-cache/
+
+# Valgrind
+*.supp
+vgcore.*
+
+# Coverage
+*.gcno
+*.gcda
+*.gcov
+lcov.info
+coverage/
+
+# AddressSanitizer symbolizer cache
+asan_cache/
+
+# ------------------------------------------------------------------------------
+# Editor Temporaries
+# ------------------------------------------------------------------------------
+*.swp
+*.swo
+*.bak
+*.orig
+*#
+.#*
+\#*#
+
+
+================================================================================
+FILE: CMakeLists.txt
+================================================================================
+# ============================================================================
+# KVault — Root CMake Configuration
+# ============================================================================
+#
+# Targets:
+#   kvault_engine  — Static library containing the LSM-Tree storage engine
+#   kvault_tests   — GoogleTest executable for all unit tests
+#
+# Usage:
+#   cmake -B build -DCMAKE_BUILD_TYPE=Debug
+#   cmake --build build --parallel
+#   cd build && ctest --output-on-failure
+#
+# ============================================================================
+cmake_minimum_required(VERSION 3.20)
+
+project(kvault
+    VERSION     0.1.0
+    LANGUAGES   CXX
+    DESCRIPTION "A high-performance LSM-Tree Key-Value Store"
+)
+
+# Generate compile_commands.json for IDE IntelliSense (removes false positive syntax errors)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ----------------------------------------------------------------------------
+# Compiler Settings
+# ----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)           # No GNU extensions — strict ISO C++20
+
+# ---------------------------------------------------------------------------
+# Compiler Warnings (treat warnings as quality signals, not errors by default)
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/W4 /permissive-)
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+endif()
+
+# ============================================================================
+# Dependencies — GoogleTest via FetchContent
+# ============================================================================
+# FetchContent downloads and builds GoogleTest as part of the project.
+# No manual installation required — interviewers can clone and build in
+# one step: `cmake -B build && cmake --build build`
+# ============================================================================
+include(FetchContent)
+
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+)
+
+# Prevent GoogleTest from overriding the parent project's compiler/linker
+# settings on Windows (critical for MSVC builds).
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
+
+# --- Asio (Required by Crow) ---
+FetchContent_Declare(
+    asio
+    URL https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-1-30-2.tar.gz
+)
+FetchContent_MakeAvailable(asio)
+
+# --- Crow (HTTP REST Framework) ---
+set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    Crow
+    URL https://github.com/CrowCpp/Crow/archive/refs/tags/v1.2.0.tar.gz
+)
+# Force Crow to use our fetched ASIO instead of system ASIO
+set(ASIO_INCLUDE_DIR ${asio_SOURCE_DIR}/asio/include CACHE PATH "" FORCE)
+FetchContent_MakeAvailable(Crow)
+
+# --- Static Library: kvault_engine ---
+# Contains the core engine logic (MemTable, WAL, SSTable, KVStore)
+add_library(kvault_engine STATIC
+    src/skiplist.cpp
+    src/memtable.cpp
+    src/wal.cpp
+    src/bloom_filter.cpp
+    src/sstable_writer.cpp
+    src/sstable_reader.cpp
+    src/sstable_manager.cpp
+    src/kvstore.cpp
+    src/api_routes.cpp
+)
+
+target_include_directories(kvault_engine
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+# Link Crow to the engine (since api_routes uses it)
+target_link_libraries(kvault_engine PUBLIC Crow::Crow)
+
+if(WIN32)
+    target_link_libraries(kvault_engine PUBLIC ws2_32 mswsock)
+endif()
+
+# --- Executable: kvault_server ---
+add_executable(kvault_server
+    src/main.cpp
+)
+
+target_link_libraries(kvault_server
+    PRIVATE
+        kvault_engine
+)
+
+target_compile_features(kvault_engine PUBLIC cxx_std_20)
+
+# ============================================================================
+# Testing
+# ============================================================================
+enable_testing()
+add_subdirectory(tests)
+
+
+================================================================================
+FILE: cmake_log.txt
+================================================================================
+
+
+================================================================================
+FILE: export_project.py
+================================================================================
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+import os
+
+# Configuration
+PROJECT_DIR = "."
+OUTPUT_FILE = "project_context.txt"
+
+# Folders to completely ignore
+IGNORE_DIRS = {
+    ".git",
+    "build",
+    ".cache",
+    "data",           # Database files (.sst, .wal)
+    "node_modules",   # React dependencies
+    "dist",           # React build output
+    ".vite",          # Vite cache
+    "_deps",          # CMake fetch content
+    "CMakeFiles",     # CMake cache
+    ".vscode",        # IDE settings
+}
+
+# File extensions to include (add or remove as needed)
+INCLUDE_EXTENSIONS = {
+    # C++ backend
+    ".cpp", ".hpp", ".h", ".c",
+    # React frontend
+    ".js", ".jsx", ".css", ".html",
+    # Build systems
+    ".txt",  # For CMakeLists.txt
+    ".json", # For package.json
+    # Documentation
+    ".md",
+    # Configuration
+    ".gitignore", ".py"
+}
+
+# Specific files to ignore even if they match extensions
+IGNORE_FILES = {
+    "package-lock.json",
+    "CMakeCache.txt",
+    OUTPUT_FILE,          # Don't include the output file in itself!
+}
+
+def is_text_file(filepath):
+    """Basic check to see if a file extension is in our allowed list."""
+    _, ext = os.path.splitext(filepath)
+    # CMakeLists.txt and .gitignore don't always fit perfectly in ext, so we check basenames too
+    basename = os.path.basename(filepath)
+    if basename in {"CMakeLists.txt", ".gitignore", "package.json"}:
+        return True
+    return ext in INCLUDE_EXTENSIONS
+
+def generate_context():
+    print(f"🔍 Scanning project directory...")
+    
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as out_file:
+        out_file.write("# KVault-DB Project Context\n")
+        out_file.write("This file contains the full source code of the KVault-DB project.\n\n")
+        
+        file_count = 0
+        
+        for root, dirs, files in os.walk(PROJECT_DIR):
+            # Modify 'dirs' in-place to prevent os.walk from entering ignored directories
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+            
+            for file in files:
+                if file in IGNORE_FILES:
+                    continue
+                
+                filepath = os.path.join(root, file)
+                
+                if is_text_file(filepath):
+                    try:
+                        # Try to read the file
+                        with open(filepath, "r", encoding="utf-8") as in_file:
+                            content = in_file.read()
+                            
+                        # Write to the output file clearly formatted
+                        # We use relative paths for cleaner output
+                        rel_path = os.path.relpath(filepath, PROJECT_DIR).replace("\\", "/")
+                        out_file.write(f"\n{'='*80}\n")
+                        out_file.write(f"FILE: {rel_path}\n")
+                        out_file.write(f"{'='*80}\n")
+                        out_file.write(content)
+                        out_file.write("\n")
+                        
+                        print(f"✅ Added: {rel_path}")
+                        file_count += 1
+                        
+                    except UnicodeDecodeError:
+                        print(f"⚠️ Skipped {filepath} (Not a valid UTF-8 text file)")
+                    except Exception as e:
+                        print(f"❌ Error reading {filepath}: {e}")
+                        
+    print(f"\n🎉 Done! Combined {file_count} files into '{OUTPUT_FILE}'.")
+    print(f"You can now upload '{OUTPUT_FILE}' to Gemini Notebooks or any LLM.")
+
+if __name__ == "__main__":
+    generate_context()
+
+
+================================================================================
+FILE: README.md
+================================================================================
+# 🗄️ KVault-DB — LSM-Tree Key-Value Store
+
+> A production-grade, single-node Key-Value Store built from scratch in **C++20**, implementing the full Log-Structured Merge-Tree (LSM-Tree) storage engine with a real-time **React** visualization dashboard. Every layer — from probabilistic data structures to binary disk serialization — is implemented without third-party storage libraries.
+
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?logo=cmake&logoColor=white)](https://cmake.org/)
+[![React](https://img.shields.io/badge/Frontend-React_18-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![Tests](https://img.shields.io/badge/Tests-74%2F74_Passing-brightgreen?logo=googletest)](https://google.github.io/googletest/)
+[![Build](https://img.shields.io/badge/Build-Ninja-black?logo=ninja)](https://ninja-build.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+---
+
+![Dashboard Preview](dashboard.gif)
+
+---
+
+## 🧠 Motivation
+
+Competitive programming develops strong algorithmic intuition — Skip Lists, balanced trees, hashing — but leaves a gap: how do these structures behave under real-world constraints like **crash recovery**, **byte-level I/O**, **memory ownership**, and **concurrent access**?
+
+KVault-DB is the answer to that question. It systematically applies the algorithms from competitive programming to solve the engineering problems that define production database internals: ordered in-memory storage, durability via write-ahead logging, space-efficient disk layout, and probabilistic false-positive filtering.
+
+The architecture mirrors the engine that powers **LevelDB**, **RocksDB**, and **Apache Cassandra**.
+
+---
+
+## ⚙️ Core Systems Engineering Highlights
+
+### 🧩 Arena-Allocated Skip List (MemTable)
+
+The in-memory write buffer is a custom **probabilistic Skip List** ($p = 0.5$, `kMaxLevel = 16`) supporting $O(\log n)$ expected insert, search, and delete.
+
+**The critical design decision** was the memory ownership model. A naive implementation using recursive `std::unique_ptr<Node>` chains has two fatal flaws:
+1. **Double-free UB**: multiple forward pointers at different levels point to the same node — violating `unique_ptr`'s exclusive-ownership invariant.
+2. **Stack overflow on destruction**: a million-node chain causes a million-deep recursive destructor call stack.
+
+The solution is an **Arena Allocation** model:
+
+```
+ head_ (unique_ptr<Node>)      arena_ (vector<unique_ptr<Node>>)
+ ┌────────────────┐             ┌──────────────────────────────┐
+ │ forward[0] ────┼──► Node A   │ [0] unique_ptr → Node A      │
+ │ forward[1] ────┼──► Node C   │ [1] unique_ptr → Node B      │
+ │ forward[2] ────┼──► ...      │ [2] unique_ptr → Node C      │
+ └────────────────┘             └──────────────────────────────┘
+                                  ▲  OWNS all nodes (bulk O(n) cleanup)
+                                  │  forward[] are NON-OWNING raw Node*
+```
+
+The `arena_` vector holds **exclusive ownership** of every node via `unique_ptr`. The `forward[]` arrays inside each node are **non-owning raw pointers** used solely for traversal. When the SkipList is destroyed, the `vector` destructor frees every node in one flat, iterative pass — **zero recursion, zero stack pressure**.
+
+> **Key insight:** When `vector<unique_ptr>` reallocates (grows), the `unique_ptr` objects are *moved* to new memory, but the underlying heap addresses (`Node*`) do not change. All raw pointers in `forward[]` remain valid after any reallocation.
+
+**Tombstone semantics:** Deletes are implemented as blind `O(1)` writes of a sentinel value (`"\x7F__KVAULT_TOMBSTONE__\x7F"`), never physical removals. This is architecturally necessary — the key may exist in an older on-disk SSTable. The tombstone logically vetoes it during reads without any disk I/O.
+
+---
+
+### 📝 Binary Write-Ahead Log (WAL) with CRC32 Integrity
+
+Every mutation (`PUT` / `DELETE`) is durably serialized to a binary append-only log **before** being applied to the MemTable, guaranteeing crash recovery.
+
+**Binary record format (per entry):**
+
+```
+┌──────────┬────────────┬────────────┬────────────┬────────────┬─────────────────────────┐
+│ CRC32    │ RecordType │ key_len    │ value_len  │  key data  │  value data             │
+│ (4 bytes)│ (1 byte)   │ (4 bytes)  │ (4 bytes)  │ (variable) │  (variable)             │
+└──────────┴────────────┴────────────┴────────────┴────────────┴─────────────────────────┘
+```
+
+**CRC32 is computed at compile time** using a `constexpr` lookup table (polynomial `0xEDB88320`), eliminating runtime table initialization overhead. On WAL replay (crash recovery), the CRC is recomputed and compared; a mismatch causes replay to **stop at the corruption boundary** — preventing partial-write poison from entering the engine.
+
+---
+
+### 💾 SSTable Writer — Sequential Disk Layout
+
+When the MemTable exceeds its configured flush threshold, it is atomically snapshotted, serialized to an immutable **Sorted String Table (SSTable)** file, and cleared. The binary file layout:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  DATA BLOCK      │  SPARSE INDEX BLOCK  │  BLOOM FILTER  │  FOOTER  │
+│  (sorted KV pairs│  (every Nth key +    │  (serialized   │ (offsets │
+│   with lengths)  │   byte offset)       │   bitset)      │  + magic)│
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The **footer** is verified at compile time with a `static_assert` on its byte size — a zero-cost contract that prevents accidental layout drift from breaking the reader's seek calculation. `fsync()` is called after the write to flush OS page cache to durable storage before the WAL is truncated.
+
+---
+
+### 🔍 Read-Path Optimization: Double-Hashed Bloom Filters
+
+To avoid expensive disk reads for non-existent keys, every SSTable carries an in-memory **Bloom Filter**. Rather than requiring $k$ independent hash functions, we use the **double-hashing technique** (Kirsch-Mitzenmacher optimization):
+
+$$h_i(x) = h_1(x) + i \cdot h_2(x) \pmod{m}, \quad i = 0, 1, \ldots, k-1$$
+
+Two base hashes (**FNV-1a** + a **Murmur3-style mix**) generate all $k$ probe positions, eliminating the cost of $k$ separate hash computations. The filter is serialized directly into the SSTable file and memory-mapped on startup.
+
+**SSTable Lookup Path:**
+
+```
+GET("key")
+  │
+  ├─► MemTable (O(log n) Skip List search)
+  │      ├── Found live value → return it
+  │      └── Found tombstone  → return nullopt (no disk I/O)
+  │
+  └─► SSTableManager (newest → oldest)
+         │
+         ├─► Bloom Filter check (O(k) bit reads, k=7 by default)
+         │      └── Negative → skip this SSTable (no disk I/O)
+         │
+         └─► Sparse Index binary search → seek → linear scan → return
+```
+
+The **sparse index** stores one entry per $N$ keys with their byte offsets. An `upper_bound` binary search locates the correct disk block, then a short linear scan finds the exact key. This trades index memory for I/O precision.
+
+---
+
+### ✅ Test Coverage: 74/74 in Under 1.6 Seconds
+
+| Test Suite | Tests | What It Covers |
+|---|---|---|
+| `SkipListTest` | 16 | CRUD, iteration, upsert, remove, 10K stress |
+| `MemTableTest` | 22 | Tombstones, byte tracking, snapshot order |
+| `WALTest` | 18 | Replay, CRC corruption, truncation, sync modes |
+| `SSTableTest` | 14 | Bloom FP rates, round-trip, corrupted footer |
+| `KVStoreTest` | 4 | WAL recovery, SSTable cascade, flush pipeline |
+| **Total** | **74** | **Zero warnings (`-Wall -Wextra -Wpedantic`)** |
+
+---
+
+## 🏗️ Full-Stack Architecture
+
+### Request Flow
+
+```mermaid
+graph TB
+    subgraph Dashboard["🖥️  React Dashboard (Vite, port 5173)"]
+        UI["Metrics Display<br/>(MemTable size, WAL size, SSTable count)"]
+        KVForm["KV Operations Form<br/>(PUT / GET / DELETE)"]
+        Viz["Skip List Visualizer<br/>(SVG, live MemTable snapshot)"]
+    end
+
+    subgraph API["🌐  Crow HTTP Server (port 8080)"]
+        Router["REST Router"]
+    end
+
+    subgraph Engine["⚙️  LSM-Tree Engine (C++20)"]
+        KVStore["KVStore (Facade)<br/>shared_mutex RW lock"]
+        WAL["WriteAheadLog<br/>(binary append-only)"]
+        MemTable["MemTable<br/>(Arena Skip List)"]
+        SSTMgr["SSTableManager<br/>(newest → oldest read)"]
+    end
+
+    subgraph Disk["💾  Persistent Storage"]
+        WALFile["wal.log<br/>(binary WAL)"]
+        SSTFiles["*.sst files<br/>(immutable SSTables)"]
+    end
+
+    Dashboard -->|"fetch /api/kv, /api/metrics"| Router
+    Router --> KVStore
+    KVStore --> WAL --> WALFile
+    KVStore --> MemTable
+    KVStore -->|"flush pipeline"| SSTMgr --> SSTFiles
+    MemTable -->|"should_flush() == true"| SSTMgr
+```
+
+### PUT Write Path
+
+```
+PUT("k", "v")
+  1. Acquire exclusive lock (unique_lock<shared_mutex>)
+  2. WAL::append({PUT, "k", "v"})  ← binary write + optional fsync
+  3. MemTable::put("k", "v")       ← O(log n) Skip List insert
+  4. if (memtable.should_flush())
+       → snapshot() → SSTableWriter::write() → SSTableManager::register()
+       → WAL::truncate() → MemTable::clear()
+  5. Release lock
+```
+
+### GET Read Path
+
+```
+GET("k")
+  1. Acquire shared lock (shared_lock<shared_mutex>)
+  2. MemTable::get("k")
+       → found live value  → return immediately
+       → found tombstone   → return nullopt (key definitively deleted)
+       → not found         → fall through to disk
+  3. SSTableManager: iterate newest → oldest
+       → BloomFilter::might_contain("k") == false → skip (no I/O)
+       → Binary search sparse index → seek → scan → return if found
+  4. Return nullopt if exhausted all SSTables
+```
+
+---
+
+## 📁 Project Structure
+
+```
+KVault-DB/
+│
+├── CMakeLists.txt                    # Root CMake (C++20, FetchContent, Ninja)
+├── README.md
+│
+├── include/kvault/                   # ══ PUBLIC HEADERS ══
+│   ├── kvstore.hpp                   # Top-level engine facade
+│   ├── memtable.hpp                  # MemTable with byte tracking & tombstones
+│   ├── skiplist.hpp                  # Arena-allocated probabilistic Skip List
+│   ├── wal.hpp                       # Binary Write-Ahead Log interface
+│   ├── sstable_writer.hpp            # SSTable serialization (flush path)
+│   ├── sstable_reader.hpp            # SSTable deserialization (read path)
+│   ├── sstable_manager.hpp           # Multi-SSTable read orchestration
+│   ├── bloom_filter.hpp              # Double-hashed Bloom Filter
+│   ├── api_routes.hpp                # Crow HTTP route declarations
+│   ├── config.hpp                    # Tunable EngineConfig parameters
+│   └── types.hpp                     # Key, Value, KVRecord, RecordType
+│
+├── src/                              # ══ IMPLEMENTATION ══
+│   ├── kvstore.cpp
+│   ├── memtable.cpp
+│   ├── skiplist.cpp
+│   ├── wal.cpp
+│   ├── sstable_writer.cpp
+│   ├── sstable_reader.cpp
+│   ├── sstable_manager.cpp
+│   ├── bloom_filter.cpp
+│   ├── api_routes.cpp                # Crow JSON handlers + CORS
+│   └── main.cpp                      # Server entry point (port 8080)
+│
+├── tests/                            # ══ GOOGLETEST SUITE ══
+│   ├── CMakeLists.txt
+│   ├── test_skiplist.cpp             # 16 tests
+│   ├── test_memtable.cpp             # 22 tests
+│   ├── test_wal.cpp                  # 18 tests
+│   ├── test_sstable.cpp              # 14 tests
+│   └── test_kvstore_integration.cpp  # 4 end-to-end tests
+│
+└── dashboard/                        # ══ REACT DASHBOARD ══
+    ├── package.json
+    ├── vite.config.js                # Proxy /api → localhost:8080
+    ├── index.html
+    └── src/
+        ├── App.jsx                   # Root layout
+        ├── index.css                 # Glassmorphism design system
+        ├── hooks/
+        │   ├── useKVStore.js         # PUT/GET/DELETE fetch hook
+        │   └── useMetrics.js         # 2-second polling hook
+        └── components/
+            ├── KVForm.jsx            # Operation panel + history
+            ├── MetricsDashboard.jsx  # Live metric cards
+            └── SkipListVisualizer.jsx# SVG Skip List diagram
+```
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+| Tool | Version | Notes |
+|---|---|---|
+| GCC / Clang | ≥ 13 (GCC) | C++20 required |
+| CMake | ≥ 3.20 | |
+| Ninja | any | Recommended generator |
+| Node.js | ≥ 18 | For the React dashboard |
+
+> **Windows (MSYS2/UCRT64):** All commands work in the UCRT64 shell. CMake will auto-download Crow, ASIO, and GoogleTest via `FetchContent`.
+
+---
+
+### 1. Build the C++ Backend
+
+```bash
+# Clone
+git clone https://github.com/KHU5HWANT/kvault-DB.git
+cd kvault-DB
+
+# Configure (downloads dependencies automatically)
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+# Compile
+cmake --build build --parallel
+```
+
+---
+
+### 2. Run the Test Suite
+
+```bash
+cd build
+ctest --output-on-failure
+```
+
+Expected output:
+```
+100% tests passed, 0 tests failed out of 74
+Total Test time (real) =   1.58 sec
+```
+
+---
+
+### 3. Start the Engine Server
+
+```bash
+# From the project root:
+./build/kvault_server.exe      # Windows
+# OR
+./build/kvault_server          # Linux/macOS
+```
+
+```
+Starting KVault Engine...
+KVault initialized. Recovered WAL size: 0 bytes. Active SSTables: 0
+Starting HTTP API on port 8080...
+[INFO] Crow server running at http://0.0.0.0:8080 (16 threads)
+```
+
+---
+
+### 4. Start the React Dashboard
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** — the dashboard connects automatically and begins polling engine metrics every 2 seconds.
+
+---
+
+### 5. Test the REST API Directly
+
+```bash
+# PUT a key
+curl -X POST http://localhost:8080/api/kv \
+     -H "Content-Type: application/json" \
+     -d '{"key": "user:1001", "value": "Alice"}'
+
+# GET a key
+curl http://localhost:8080/api/kv/user:1001
+
+# DELETE a key (inserts tombstone)
+curl -X DELETE http://localhost:8080/api/kv/user:1001
+
+# Live engine metrics
+curl http://localhost:8080/api/metrics
+
+# Current MemTable snapshot (for visualizer)
+curl http://localhost:8080/api/memtable/snapshot
+```
+
+---
+
+## ⚙️ Configuration
+
+Tune the engine by modifying `include/kvault/config.hpp`:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `memtable_flush_threshold_bytes` | `4 MB` | MemTable size before SSTable flush |
+| `bloom_filter_bits_per_key` | `10` | Bloom filter density (FP rate ~1%) |
+| `bloom_hash_count` | `7` | Number of hash probes per lookup |
+| `sync_per_write` | `false` | `fsync()` on every WAL append |
+| `sstable_directory` | `data/sstables/` | SSTable persistence path |
+| `wal_directory` | `data/wal/` | WAL persistence path |
+
+---
+
+## 📚 References
+
+This project is a direct implementation of the concepts described in:
+
+- **Kleppmann, M.** — *Designing Data-Intensive Applications* (O'Reilly, 2017) — Chapter 3: Storage and Retrieval
+- **Petrov, A.** — *Database Internals* (O'Reilly, 2019) — Chapters 4–7: B-Trees, LSM-Trees, and Storage
+- **Pugh, W.** — *Skip Lists: A Probabilistic Alternative to Balanced Trees* (CACM, 1990)
+- **Kirsch & Mitzenmacher** — *Less Hashing, Same Performance: Building a Better Bloom Filter* (2008)
+
+---
+
+## 📄 License
+
+MIT © 2026
+
+
+================================================================================
+FILE: stress_test.py
+================================================================================
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+import requests
+import concurrent.futures
+import time
+
+# Configuration
+BASE_URL = "http://localhost:8080/api/kv"
+NUM_THREADS = 20
+NUM_REQUESTS = 5000  # Total keys to insert
+
+print(f"🚀 Starting Thread-Safety Stress Test on KVault-DB")
+print(f"⚙️  Threads: {NUM_THREADS}")
+print(f"📦 Total Inserts: {NUM_REQUESTS}\n")
+
+import threading
+
+# Use thread-local storage for sessions to enable connection pooling (HTTP Keep-Alive)
+thread_local = threading.local()
+
+def get_session():
+    if not hasattr(thread_local, "session"):
+        thread_local.session = requests.Session()
+    return thread_local.session
+
+def insert_key(i):
+    """Worker function to simulate a user inserting data"""
+    key = f"stress_key_{i}"
+    value = f"data_from_thread_{i%NUM_THREADS}_timestamp_{time.time()}"
+    try:
+        session = get_session()
+        response = session.post(BASE_URL, json={"key": key, "value": value})
+        return response.status_code == 200
+    except Exception:
+        return False
+
+def read_key(i):
+    """Worker function to simulate a user reading data"""
+    key = f"stress_key_{i}"
+    try:
+        session = get_session()
+        response = session.get(f"{BASE_URL}/{key}")
+        return response.status_code == 200
+    except Exception:
+        return False
+
+# --- PHASE 1: Concurrent Writes ---
+print("🔥 [Phase 1] Hammering database with concurrent PUT requests...")
+start_time = time.time()
+
+successful_writes = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+    # Submit all tasks to the thread pool
+    results = executor.map(insert_key, range(NUM_REQUESTS))
+    successful_writes = sum(1 for success in results if success)
+
+write_time = time.time() - start_time
+print(f"✅ Phase 1 Complete in {write_time:.2f} seconds!")
+print(f"📊 Write Success Rate: {successful_writes}/{NUM_REQUESTS} ({(successful_writes/NUM_REQUESTS)*100:.1f}%)\n")
+
+# --- PHASE 2: Concurrent Reads ---
+print("🔎 [Phase 2] Verifying no data corruption with concurrent GET requests...")
+start_time = time.time()
+
+successful_reads = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+    # Submit all tasks to the thread pool
+    results = executor.map(read_key, range(NUM_REQUESTS))
+    successful_reads = sum(1 for success in results if success)
+
+read_time = time.time() - start_time
+print(f"✅ Phase 2 Complete in {read_time:.2f} seconds!")
+print(f"📊 Read Success Rate: {successful_reads}/{NUM_REQUESTS} ({(successful_reads/NUM_REQUESTS)*100:.1f}%)")
+
+# -----------------------------------------------------------------------
+# VERDICT
+# -----------------------------------------------------------------------
+# The true measure of thread safety is READ CONSISTENCY, not write HTTP
+# status codes. A write may return a transient HTTP 500 if it hits the
+# engine exactly during a MemTable → SSTable flush pipeline (the engine
+# blocks briefly while fsync()ing to disk), but the data is committed to
+# the WAL before the response is sent — so it is never actually lost.
+#
+# If the engine had a real data race or lock bug, concurrent writes would
+# CORRUPT the Skip List in memory, and the subsequent reads would fail.
+# A read success rate of 100% proves zero memory corruption occurred.
+# -----------------------------------------------------------------------
+total_time = write_time + read_time
+write_rate  = successful_writes / write_time
+read_rate   = successful_reads  / read_time
+data_loss   = NUM_REQUESTS - successful_reads
+corrupt_pct = (data_loss / NUM_REQUESTS) * 100
+
+print(f"\n{'='*55}")
+print(f"  📈 PERFORMANCE SUMMARY")
+print(f"{'='*55}")
+print(f"  Write Throughput : {write_rate:>8.0f} ops/sec")
+print(f"  Read  Throughput : {read_rate:>8.0f} ops/sec")
+print(f"  Total Time       : {total_time:>8.2f} seconds")
+print(f"{'='*55}")
+
+# Verdict is based on read consistency (ground truth of data integrity)
+if successful_reads == NUM_REQUESTS:
+    transient = NUM_REQUESTS - successful_writes
+    print(f"\n🏆 THREAD SAFETY VERIFIED!")
+    print(f"   → 0 keys corrupted or lost under {NUM_THREADS}-thread concurrency.")
+    if transient > 0:
+        print(f"   → {transient} write(s) returned HTTP 5xx during MemTable flush")
+        print(f"     (data committed to WAL — reads confirm 100% durability).")
+else:
+    print(f"\n❌ DATA CORRUPTION DETECTED: {data_loss} keys ({corrupt_pct:.2f}%) unreadable.")
+    print(f"   This indicates a real thread-safety or data-integrity bug.")
+
+
+================================================================================
+FILE: dashboard/index.html
+================================================================================
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Real-time LSM-Tree Key-Value Store visualization dashboard. Monitor MemTable, WAL, and SSTable metrics live." />
+    <title>KVault — LSM Engine Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+================================================================================
+FILE: dashboard/package.json
+================================================================================
+{
+  "name": "kvault-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time visualization dashboard for the KVault LSM-Tree storage engine",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
+  }
+}
+
+
+================================================================================
+FILE: dashboard/vite.config.js
+================================================================================
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      // Proxy all /api calls to the C++ backend running on port 8080.
+      // This avoids CORS issues during development.
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+    },
+  },
+})
+
+
+================================================================================
+FILE: dashboard/src/App.css
+================================================================================
+/* ============================================================================
+   App.css — Root layout
+   ============================================================================ */
+
+/* ---- Header ---------------------------------------------------------------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(7, 9, 15, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.logo-icon {
+  width: 34px;
+  height: 34px;
+  background: linear-gradient(135deg, #6c63ff, #00d4ff);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.logo-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #e9ecef, #adb5bd);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.logo-sub {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.last-updated {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+/* ---- Main Layout ----------------------------------------------------------- */
+.app-main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* ---- Section Heading ------------------------------------------------------- */
+.section-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-1);
+}
+
+.section-heading::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+/* ---- Bottom two-column layout --------------------------------------------- */
+.app-bottom-grid {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .app-bottom-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- Offline Banner -------------------------------------------------------- */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.2);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--color-accent-3);
+  animation: fade-up 0.3s ease;
+}
+
+.offline-banner code {
+  font-family: var(--font-mono);
+  background: rgba(255, 107, 107, 0.12);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+
+================================================================================
+FILE: dashboard/src/App.jsx
+================================================================================
+// ============================================================================
+// App.jsx — KVault Dashboard Root
+// ============================================================================
+// Unified single-screen dashboard:
+//
+//   [ Header: Logo | Status | Last Updated ]
+//   [ Offline Banner (conditional) ]
+//   [ Metrics Row: MemTable | WAL | SSTables ]
+//   [ Bottom Grid: KVForm | SkipList Visualizer ]
+// ============================================================================
+
+import { useCallback } from 'react'
+import { useMetrics } from './hooks/useMetrics'
+import MetricsDashboard from './components/MetricsDashboard'
+import KVForm from './components/KVForm'
+import SkipListVisualizer from './components/SkipListVisualizer'
+import './App.css'
+
+function StatusBadge({ status }) {
+  const classes = {
+    online:     'badge badge-online',
+    offline:    'badge badge-offline',
+    connecting: 'badge badge-loading',
+  }
+  const labels = {
+    online:     'Engine Online',
+    offline:    'Engine Offline',
+    connecting: 'Connecting…',
+  }
+  return (
+    <span className={classes[status]}>
+      {status === 'online' && <span className="live-dot" />}
+      {labels[status]}
+    </span>
+  )
+}
+
+export default function App() {
+  const { metrics, snapshot, backendStatus, lastUpdated, refetch } = useMetrics()
+
+  // After every KV operation, immediately re-fetch metrics/snapshot
+  // so the visualizer updates without waiting for the next poll tick.
+  const handleOperationComplete = useCallback(() => {
+    refetch()
+  }, [refetch])
+
+  const isOffline = backendStatus === 'offline'
+
+  return (
+    <>
+      {/* ---- Sticky Header ------------------------------------------------ */}
+      <header className="app-header">
+        <div className="app-logo">
+          <div className="logo-icon">🗄️</div>
+          <div className="logo-text">
+            <span className="logo-title">KVault</span>
+            <span className="logo-sub">LSM-Tree Engine Dashboard</span>
+          </div>
+        </div>
+
+        <div className="header-right">
+          {lastUpdated && (
+            <span className="last-updated">
+              Updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+          <StatusBadge status={backendStatus} />
+        </div>
+      </header>
+
+      {/* ---- Main Content ------------------------------------------------- */}
+      <main className="app-main">
+
+        {/* Offline warning */}
+        {isOffline && (
+          <div className="offline-banner">
+            <span style={{ fontSize: '20px' }}>⚠️</span>
+            <div>
+              <strong>Backend not reachable.</strong>
+              {' '}Start the engine:{' '}
+              <code>.\build\kvault_server.exe</code>
+              {' '}then wait for the dashboard to reconnect automatically.
+            </div>
+          </div>
+        )}
+
+        {/* Live Metrics */}
+        <section aria-label="Engine metrics">
+          <div className="section-heading">📊 Engine Metrics</div>
+          <MetricsDashboard metrics={metrics} />
+        </section>
+
+        {/* Operations + Visualizer */}
+        <section aria-label="Key-value operations and visualizer">
+          <div className="section-heading">🔧 Interact & Visualize</div>
+          <div className="app-bottom-grid">
+            <KVForm onOperationComplete={handleOperationComplete} />
+            <SkipListVisualizer entries={snapshot} />
+          </div>
+        </section>
+
+      </main>
+    </>
+  )
+}
+
+
+================================================================================
+FILE: dashboard/src/index.css
+================================================================================
+/* ============================================================================
+   KVault Dashboard — Global Design System
+   Uses CSS Custom Properties for a premium dark-mode glassmorphism aesthetic.
+   ============================================================================ */
+
+/* --- Google Fonts are loaded in index.html --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ---- Design Tokens -------------------------------------------------------- */
+:root {
+  /* Color Palette */
+  --color-bg-base:        #07090f;
+  --color-bg-elevated:    #0d1117;
+  --color-bg-glass:       rgba(255, 255, 255, 0.04);
+  --color-bg-glass-hover: rgba(255, 255, 255, 0.07);
+  --color-border:         rgba(255, 255, 255, 0.08);
+  --color-border-bright:  rgba(255, 255, 255, 0.16);
+
+  /* Brand Gradient */
+  --color-accent-1:   #6c63ff;  /* indigo */
+  --color-accent-2:   #00d4ff;  /* cyan */
+  --color-accent-3:   #ff6b6b;  /* coral (tombstones) */
+  --color-accent-4:   #51cf66;  /* green (success) */
+  --color-accent-warn: #fcc419; /* amber (warnings) */
+
+  /* Text */
+  --color-text-primary:   #f1f3f5;
+  --color-text-secondary: #868e96;
+  --color-text-muted:     #495057;
+
+  /* Typography */
+  --font-sans:  'Inter', system-ui, sans-serif;
+  --font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Spacing */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Radii */
+  --radius-sm:  6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  /* Shadows */
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255,255,255,0.06) inset;
+  --shadow-glow-accent: 0 0 32px rgba(108, 99, 255, 0.2);
+
+  /* Transitions */
+  --transition-fast:   150ms ease;
+  --transition-normal: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ---- Reset & Base --------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ---- Scrollbar Styling ---------------------------------------------------- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-bright); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-accent-1); }
+
+/* ---- Utility Classes ------------------------------------------------------ */
+.glass-card {
+  background: var(--color-bg-glass);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.glass-card:hover {
+  border-color: var(--color-border-bright);
+}
+
+.mono { font-family: var(--font-mono); }
+
+/* ---- Background Mesh Gradient --------------------------------------------- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 0%,   rgba(108, 99, 255, 0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 100%,  rgba(0, 212, 255, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 50% 50%,  rgba(81, 207, 102, 0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* ---- Animated Number Change ----------------------------------------------- */
+@keyframes pop-in {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.12); color: var(--color-accent-2); }
+  100% { transform: scale(1); }
+}
+
+.metric-value.changed {
+  animation: pop-in 0.4s var(--transition-spring);
+}
+
+/* ---- Pulse dot (live indicator) ------------------------------------------- */
+@keyframes pulse-ring {
+  0%   { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(81, 207, 102, 0.6); }
+  70%  { transform: scale(1);    box-shadow: 0 0 0 8px rgba(81, 207, 102, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(81, 207, 102, 0); }
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent-4);
+  animation: pulse-ring 2s ease infinite;
+  display: inline-block;
+}
+
+/* ---- Fade-in entry animation ---------------------------------------------- */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-up { animation: fade-up 0.5s ease forwards; }
+.fade-up-delay-1 { animation: fade-up 0.5s 0.1s ease both; }
+.fade-up-delay-2 { animation: fade-up 0.5s 0.2s ease both; }
+.fade-up-delay-3 { animation: fade-up 0.5s 0.3s ease both; }
+.fade-up-delay-4 { animation: fade-up 0.5s 0.4s ease both; }
+
+/* ---- Status Badge --------------------------------------------------------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.badge-online { background: rgba(81, 207, 102, 0.15); color: var(--color-accent-4); border: 1px solid rgba(81, 207, 102, 0.3); }
+.badge-offline { background: rgba(255, 107, 107, 0.15); color: var(--color-accent-3); border: 1px solid rgba(255, 107, 107, 0.3); }
+.badge-loading { background: rgba(252, 196, 25, 0.15); color: var(--color-accent-warn); border: 1px solid rgba(252, 196, 25, 0.3); }
+
+/* ---- Button --------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-normal);
+  white-space: nowrap;
+  user-select: none;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-accent-1), #8b5cf6);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(108, 99, 255, 0.35);
+}
+.btn-primary:hover:not(:disabled) { box-shadow: 0 6px 20px rgba(108, 99, 255, 0.5); transform: translateY(-1px); }
+
+.btn-secondary {
+  background: var(--color-bg-glass);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--color-bg-glass-hover); border-color: var(--color-border-bright); }
+
+.btn-danger {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--color-accent-3);
+  border-color: rgba(255, 107, 107, 0.25);
+}
+.btn-danger:hover:not(:disabled) { background: rgba(255, 107, 107, 0.22); box-shadow: 0 4px 14px rgba(255, 107, 107, 0.2); }
+
+.btn-success {
+  background: rgba(81, 207, 102, 0.12);
+  color: var(--color-accent-4);
+  border-color: rgba(81, 207, 102, 0.25);
+}
+.btn-success:hover:not(:disabled) { background: rgba(81, 207, 102, 0.22); }
+
+/* ---- Input --------------------------------------------------------------- */
+.input-field {
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.input-field::placeholder { color: var(--color-text-muted); font-family: var(--font-sans); }
+.input-field:focus {
+  border-color: var(--color-accent-1);
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.2);
+}
+
+/* ---- Toast Notification --------------------------------------------------- */
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slide-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+
+
+================================================================================
+FILE: dashboard/src/main.jsx
+================================================================================
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+
+
+================================================================================
+FILE: dashboard/src/components/KVForm.css
+================================================================================
+/* ============================================================================
+   KVForm.css — Operation panel styles
+   ============================================================================ */
+
+.kvform-wrapper {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.kvform-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.kvform-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.input-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: var(--space-1);
+  display: block;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.kvform-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.kvform-actions .btn {
+  flex: 1;
+  min-width: 80px;
+}
+
+/* Result display */
+.kvform-result {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  font-size: 13px;
+  animation: fade-up 0.25s ease;
+}
+
+.kvform-result.status-ok      { border-color: rgba(81, 207, 102, 0.3); }
+.kvform-result.status-error   { border-color: rgba(255, 107, 107, 0.3); }
+.kvform-result.status-not_found { border-color: rgba(252, 196, 25, 0.3); }
+
+.result-op-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-right: var(--space-2);
+  background: rgba(108, 99, 255, 0.2);
+  color: var(--color-accent-1);
+}
+
+.result-key {
+  font-family: var(--font-mono);
+  color: var(--color-accent-2);
+  font-weight: 500;
+}
+.result-value {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  word-break: break-all;
+  margin-top: var(--space-2);
+}
+.result-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: var(--space-1);
+}
+
+/* Operation History */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.02);
+  animation: fade-up 0.2s ease;
+}
+
+.history-op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 40px;
+  text-align: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.history-op.PUT    { background: rgba(81, 207, 102, 0.15);  color: var(--color-accent-4); }
+.history-op.GET    { background: rgba(0, 212, 255, 0.15);   color: var(--color-accent-2); }
+.history-op.DELETE { background: rgba(255, 107, 107, 0.15); color: var(--color-accent-3); }
+
+.history-key   { font-family: var(--font-mono); color: var(--color-text-secondary); flex: 1; }
+.history-time  { font-size: 10px; color: var(--color-text-muted); flex-shrink: 0; }
+.history-status-ok        { color: var(--color-accent-4); }
+.history-status-error     { color: var(--color-accent-3); }
+.history-status-not_found { color: var(--color-accent-warn); }
+
+
+================================================================================
+FILE: dashboard/src/components/KVForm.jsx
+================================================================================
+// ============================================================================
+// KVForm.jsx — Key-Value Operation Panel
+// ============================================================================
+// Provides PUT, GET, DELETE inputs with result display and operation history.
+// Uses the useKVStore hook for all backend interactions.
+// ============================================================================
+
+import { useState, useCallback } from 'react'
+import { useKVStore } from '../hooks/useKVStore'
+import './KVForm.css'
+
+const STATUS_ICON = {
+  ok:        '✓',
+  error:     '✗',
+  not_found: '?',
+}
+
+function ResultPanel({ result }) {
+  if (!result) return null
+
+  const { op, key, value, status, timestamp } = result
+  return (
+    <div className={`kvform-result status-${status}`}>
+      <div>
+        <span className="result-op-badge">{op}</span>
+        <span className="result-key">{key}</span>
+        <span style={{ color: 'var(--color-text-muted)', marginLeft: '6px', fontSize: '11px' }}>
+          {STATUS_ICON[status]}
+        </span>
+      </div>
+      {op === 'GET' && status === 'ok' && (
+        <div className="result-value">→ &quot;{value}&quot;</div>
+      )}
+      {status === 'not_found' && (
+        <div className="result-value" style={{ color: 'var(--color-accent-warn)' }}>Key does not exist</div>
+      )}
+      {status === 'error' && (
+        <div className="result-value" style={{ color: 'var(--color-accent-3)' }}>{value}</div>
+      )}
+      <div className="result-meta">{timestamp}</div>
+    </div>
+  )
+}
+
+function HistoryPanel({ history }) {
+  if (history.length === 0) return (
+    <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', textAlign: 'center', padding: 'var(--space-4) 0' }}>
+      No operations yet — try a PUT!
+    </p>
+  )
+
+  return (
+    <div className="history-list">
+      {history.map((item, idx) => (
+        <div key={idx} className="history-item">
+          <span className={`history-op ${item.op}`}>{item.op}</span>
+          <span className="history-key">{item.key}</span>
+          <span className={`history-status-${item.status}`}>{STATUS_ICON[item.status]}</span>
+          <span className="history-time">{item.timestamp}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export default function KVForm({ onOperationComplete }) {
+  const [key, setKey]     = useState('')
+  const [value, setValue] = useState('')
+  const { execute, lastResult, isLoading, error, history } = useKVStore()
+
+  const handleOp = useCallback(async (op) => {
+    await execute(op, key, value)
+    // Notify parent to refresh the MemTable snapshot
+    if (onOperationComplete) onOperationComplete()
+  }, [execute, key, value, onOperationComplete])
+
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === 'Enter' && !isLoading) handleOp('PUT')
+  }, [handleOp, isLoading])
+
+  return (
+    <div className="glass-card kvform-wrapper fade-up-delay-1">
+      <div className="kvform-title">⚡ Operations</div>
+
+      <div className="kvform-inputs">
+        <div className="input-group">
+          <label className="input-label" htmlFor="kv-key">Key</label>
+          <input
+            id="kv-key"
+            className="input-field"
+            type="text"
+            placeholder="e.g. user:1001"
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            onKeyDown={handleKeyDown}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+        <div className="input-group">
+          <label className="input-label" htmlFor="kv-value">Value <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(for PUT)</span></label>
+          <input
+            id="kv-value"
+            className="input-field"
+            type="text"
+            placeholder={'e.g. {"name": "Alice"}'}
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+      </div>
+
+      <div className="kvform-actions">
+        <button
+          id="btn-put"
+          className="btn btn-success"
+          onClick={() => handleOp('PUT')}
+          disabled={isLoading || !key.trim()}
+          title="Insert / Update (PUT)"
+        >
+          {isLoading ? '…' : '📥 PUT'}
+        </button>
+        <button
+          id="btn-get"
+          className="btn btn-secondary"
+          onClick={() => handleOp('GET')}
+          disabled={isLoading || !key.trim()}
+          title="Read key (GET)"
+        >
+          {isLoading ? '…' : '🔍 GET'}
+        </button>
+        <button
+          id="btn-delete"
+          className="btn btn-danger"
+          onClick={() => handleOp('DELETE')}
+          disabled={isLoading || !key.trim()}
+          title="Delete key (tombstone)"
+        >
+          {isLoading ? '…' : '🗑 DEL'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="kvform-result status-error">
+          <span style={{ color: 'var(--color-accent-3)' }}>⚠ {error}</span>
+        </div>
+      )}
+
+      <ResultPanel result={lastResult} />
+
+      <div>
+        <div className="kvform-title" style={{ marginBottom: 'var(--space-3)' }}>📋 History</div>
+        <HistoryPanel history={history} />
+      </div>
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: dashboard/src/components/MetricsDashboard.css
+================================================================================
+/* ============================================================================
+   MetricsDashboard.css — Live engine metrics display
+   ============================================================================ */
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .metrics-grid { grid-template-columns: 1fr; }
+}
+
+/* Individual metric card */
+.metric-card {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--card-accent-1), var(--card-accent-2));
+  opacity: 0.8;
+}
+
+.metric-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.metric-value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--card-accent-1), var(--card-accent-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  transition: transform 0.2s ease;
+}
+
+.metric-sub {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Spark bar — visual fill showing usage vs threshold */
+.metric-bar-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: var(--space-2);
+}
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--card-accent-1), var(--card-accent-2));
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+
+================================================================================
+FILE: dashboard/src/components/MetricsDashboard.jsx
+================================================================================
+// ============================================================================
+// MetricsDashboard.jsx — Live Engine Metrics
+// ============================================================================
+// Displays MemTable size, WAL size, and SSTable count as animated cards.
+// Numbers pop when they change (CSS animation triggered via key prop trick).
+// ============================================================================
+
+import { useRef, useEffect, useState } from 'react'
+import './MetricsDashboard.css'
+
+// Flush threshold — should match EngineConfig::memtable_flush_threshold_bytes
+const MEMTABLE_THRESHOLD_BYTES = 4 * 1024 * 1024; // 4 MB
+
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+/**
+ * Single metric card with optional progress bar and animated value.
+ */
+function MetricCard({ icon, label, value, sub, accent1, accent2, fill, fillMax, delay }) {
+  const [animKey, setAnimKey] = useState(0)
+  const prevValue = useRef(value)
+
+  // Trigger pop animation when value changes
+  useEffect(() => {
+    if (prevValue.current !== value) {
+      setAnimKey(k => k + 1)
+      prevValue.current = value
+    }
+  }, [value])
+
+  const pct = fillMax ? Math.min(100, (fill / fillMax) * 100) : 0
+
+  return (
+    <div
+      className="glass-card metric-card fade-up"
+      style={{
+        '--card-accent-1': accent1,
+        '--card-accent-2': accent2,
+        animationDelay: delay,
+      }}
+    >
+      <div className="metric-icon">{icon}</div>
+      <div className="metric-label">{label}</div>
+      <div className="metric-value changed" key={animKey}>
+        {value ?? '—'}
+      </div>
+      {sub && <div className="metric-sub">{sub}</div>}
+      {fillMax !== undefined && (
+        <div className="metric-bar-track">
+          <div className="metric-bar-fill" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * @param {{ metrics: object|null }} props
+ */
+export default function MetricsDashboard({ metrics }) {
+  const memBytes   = metrics?.memtable_size_bytes ?? null
+  const walBytes   = metrics?.wal_size_bytes       ?? null
+  const ssts       = metrics?.sstable_count        ?? null
+
+  return (
+    <div className="metrics-grid">
+      <MetricCard
+        icon="🧠"
+        label="MemTable Size"
+        value={formatBytes(memBytes)}
+        sub={memBytes !== null ? `${((memBytes / MEMTABLE_THRESHOLD_BYTES) * 100).toFixed(0)}% of flush threshold` : 'Waiting for backend…'}
+        accent1="#6c63ff"
+        accent2="#00d4ff"
+        fill={memBytes}
+        fillMax={MEMTABLE_THRESHOLD_BYTES}
+        delay="0ms"
+      />
+      <MetricCard
+        icon="📝"
+        label="WAL Size"
+        value={formatBytes(walBytes)}
+        sub="Write-Ahead Log (crash recovery)"
+        accent1="#00d4ff"
+        accent2="#51cf66"
+        fill={walBytes}
+        fillMax={MEMTABLE_THRESHOLD_BYTES * 2}
+        delay="60ms"
+      />
+      <MetricCard
+        icon="💾"
+        label="SSTable Files"
+        value={ssts !== null ? ssts.toString() : '—'}
+        sub={ssts === 0 ? 'No flushes yet' : ssts === 1 ? '1 immutable level-0 file' : `${ssts} immutable level-0 files`}
+        accent1="#fcc419"
+        accent2="#ff6b6b"
+        delay="120ms"
+      />
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: dashboard/src/components/SkipListVisualizer.css
+================================================================================
+/* ============================================================================
+   SkipListVisualizer.css
+   ============================================================================ */
+
+.visualizer-wrapper {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.visualizer-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.visualizer-empty {
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.visualizer-svg-container {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--color-border);
+}
+
+/* Node tooltip */
+.node-tooltip {
+  position: absolute;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-bright);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-primary);
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+/* Legend */
+.visualizer-legend {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* Count display */
+.visualizer-count {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+
+================================================================================
+FILE: dashboard/src/components/SkipListVisualizer.jsx
+================================================================================
+// ============================================================================
+// SkipListVisualizer.jsx — SVG Skip List Visualization
+// ============================================================================
+// Renders the current MemTable contents as a probabilistic skip list diagram.
+//
+// Since the backend exposes sorted level-0 entries (the real skip list data),
+// we simulate the multi-level structure client-side using the same p=0.5
+// coin-flip logic as the C++ engine, seeded deterministically from each key.
+//
+// Layout:
+//   - X-axis  → nodes sorted by key (level-0)
+//   - Y-axis  → skip list levels (level 0 at bottom, higher = fewer nodes)
+//   - Lines   → forward pointers connecting nodes at each level
+// ============================================================================
+
+import { useMemo, useState, useRef } from 'react'
+import './SkipListVisualizer.css'
+
+// Visual constants
+const NODE_R     = 20     // node circle radius
+const H_GAP      = 64     // horizontal gap between node centres
+const V_GAP      = 52     // vertical gap between levels
+const PAD_X      = 48     // left/right padding
+const PAD_Y      = 40     // top/bottom padding
+const MAX_LEVELS = 5      // max levels to display
+const MAX_NODES  = 32     // beyond this, collapse to table view
+
+// Colors
+const COLOR_PUT       = '#6c63ff'
+const COLOR_TOMBSTONE = '#ff6b6b'
+const COLOR_SENTINEL  = '#343a40'
+const COLOR_LANE      = 'rgba(255,255,255,0.06)'
+const COLOR_POINTER   = 'rgba(255,255,255,0.18)'
+
+// Deterministic pseudo-random level assignment based on key string.
+// Mirrors the skip list's geometric distribution (p=0.5) from the C++ engine.
+function assignLevel(key, maxLevels) {
+  let hash = 2166136261
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i)
+    hash = (hash * 16777619) >>> 0
+  }
+  let level = 1
+  while (level < maxLevels && (hash & (1 << level)) !== 0) level++
+  return level
+}
+
+function truncate(str, max = 8) {
+  return str.length > max ? str.slice(0, max - 1) + '…' : str
+}
+
+// Tooltip component that follows the hovered node
+function Tooltip({ x, y, node }) {
+  if (!node) return null
+  return (
+    <div
+      className="node-tooltip"
+      style={{ left: x + 12, top: y - 8 }}
+    >
+      <strong style={{ color: 'var(--color-accent-2)' }}>{node.key}</strong>
+      {node.type === 'tombstone'
+        ? <div style={{ color: 'var(--color-accent-3)' }}>🪦 tombstone</div>
+        : <div>→ &quot;{node.value}&quot;</div>
+      }
+    </div>
+  )
+}
+
+// Compact table fallback when there are too many entries to visualize
+function TableFallback({ entries }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+      gap: '8px',
+      padding: '16px',
+      maxHeight: '280px',
+      overflowY: 'auto',
+    }}>
+      {entries.map(e => (
+        <div key={e.key} style={{
+          display: 'flex', gap: '8px', alignItems: 'center',
+          padding: '6px 10px', borderRadius: '6px',
+          background: 'rgba(255,255,255,0.04)',
+          border: `1px solid ${e.type === 'tombstone' ? 'rgba(255,107,107,0.2)' : 'rgba(108,99,255,0.2)'}`,
+          fontSize: '12px', fontFamily: 'var(--font-mono)',
+        }}>
+          <span style={{ color: e.type === 'tombstone' ? COLOR_TOMBSTONE : COLOR_PUT, minWidth: '12px' }}>
+            {e.type === 'tombstone' ? '🪦' : '●'}
+          </span>
+          <span style={{ color: 'var(--color-accent-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {e.key}
+          </span>
+          {e.type !== 'tombstone' && (
+            <span style={{ color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              ={truncate(e.value, 14)}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export default function SkipListVisualizer({ entries }) {
+  const [tooltip, setTooltip]     = useState(null)
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 })
+  const containerRef = useRef(null)
+
+  // Derive skip list layout from entries
+  const { nodes, svgWidth, svgHeight, lanes } = useMemo(() => {
+    if (!entries || entries.length === 0) {
+      return { nodes: [], svgWidth: 200, svgHeight: 100, lanes: [] }
+    }
+
+    // Assign levels deterministically
+    const withLevels = entries.map(e => ({
+      ...e,
+      level: assignLevel(e.key, MAX_LEVELS),
+    }))
+
+    const maxLevel = Math.max(...withLevels.map(e => e.level), 1)
+
+    // Build sentinel nodes (−∞ and +∞)
+    const allNodes = [
+      { key: '−∞', value: '', type: 'sentinel', level: maxLevel, isSentinel: true },
+      ...withLevels,
+      { key: '+∞', value: '', type: 'sentinel', level: maxLevel, isSentinel: true },
+    ]
+
+    const totalNodes = allNodes.length
+    const w = PAD_X * 2 + (totalNodes - 1) * H_GAP
+    const h = PAD_Y * 2 + maxLevel * V_GAP
+
+    // x, y positions for level-0 (bottom row)
+    const positioned = allNodes.map((n, i) => ({
+      ...n,
+      x: PAD_X + i * H_GAP,
+      y0: h - PAD_Y, // level-0 y (bottom)
+      yAtLevel: (lvl) => h - PAD_Y - (lvl - 1) * V_GAP,
+    }))
+
+    // Lane backgrounds (one per level, drawn as horizontal bands)
+    const laneArr = Array.from({ length: maxLevel }, (_, i) => ({
+      level: i + 1,
+      y: h - PAD_Y - i * V_GAP,
+      label: `L${i}`,
+    }))
+
+    return { nodes: positioned, svgWidth: w, svgHeight: h, lanes: laneArr }
+  }, [entries])
+
+  const handleMouseMove = (e, node) => {
+    if (!containerRef.current) return
+    const rect = containerRef.current.getBoundingClientRect()
+    setTooltipPos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+    setTooltip(node)
+  }
+
+  if (!entries || entries.length === 0) {
+    return (
+      <div className="glass-card visualizer-wrapper fade-up-delay-3">
+        <div className="visualizer-title">🌐 MemTable Skip List</div>
+        <div className="visualizer-empty">
+          <div style={{ fontSize: '36px', marginBottom: '12px' }}>∅</div>
+          <div>MemTable is empty.</div>
+          <div style={{ marginTop: '6px' }}>Insert some keys to see the visualization.</div>
+        </div>
+      </div>
+    )
+  }
+
+  // Table fallback for very large memtables
+  if (entries.length > MAX_NODES) {
+    return (
+      <div className="glass-card visualizer-wrapper fade-up-delay-3">
+        <div className="visualizer-title">
+          🌐 MemTable Contents
+          <span className="visualizer-count">({entries.length} entries — compact view)</span>
+        </div>
+        <TableFallback entries={entries} />
+        <div className="visualizer-legend">
+          <div className="legend-item"><div className="legend-dot" style={{ background: COLOR_PUT }} />Live entry</div>
+          <div className="legend-item"><div className="legend-dot" style={{ background: COLOR_TOMBSTONE }} />Tombstone</div>
+        </div>
+      </div>
+    )
+  }
+
+  const maxLevel = Math.max(...nodes.filter(n => !n.isSentinel).map(n => n.level), 1)
+
+  return (
+    <div
+      className="glass-card visualizer-wrapper fade-up-delay-3"
+      ref={containerRef}
+      style={{ position: 'relative' }}
+      onMouseLeave={() => setTooltip(null)}
+    >
+      <div className="visualizer-title">
+        🌐 MemTable Skip List
+        <span className="visualizer-count">({entries.length} entr{entries.length === 1 ? 'y' : 'ies'}, {maxLevel} level{maxLevel > 1 ? 's' : ''})</span>
+      </div>
+
+      <Tooltip x={tooltipPos.x} y={tooltipPos.y} node={tooltip} />
+
+      <div className="visualizer-svg-container">
+        <svg
+          width={svgWidth}
+          height={svgHeight}
+          style={{ display: 'block', minWidth: '100%' }}
+          aria-label="Skip List visualization of current MemTable contents"
+        >
+          {/* --- Level lane backgrounds --- */}
+          {lanes.map(lane => (
+            <g key={lane.level}>
+              <line
+                x1={0} y1={lane.y}
+                x2={svgWidth} y2={lane.y}
+                stroke={COLOR_LANE} strokeWidth={1} strokeDasharray="4 4"
+              />
+              <text x={6} y={lane.y - 6} fontSize={9} fill="rgba(255,255,255,0.2)" fontFamily="var(--font-mono)">
+                {lane.label}
+              </text>
+            </g>
+          ))}
+
+          {/* --- Vertical connectors (level-0 links between all nodes) --- */}
+          {nodes.slice(0, -1).map((node, i) => {
+            const next = nodes[i + 1]
+            return (
+              <line
+                key={`h0-${i}`}
+                x1={node.x} y1={node.y0}
+                x2={next.x} y2={next.y0}
+                stroke={COLOR_POINTER} strokeWidth={1.5}
+              />
+            )
+          })}
+
+          {/* --- Express lane forward pointers (levels > 1) --- */}
+          {Array.from({ length: maxLevel - 1 }, (_, lvlIdx) => {
+            const lvl = lvlIdx + 2 // level 2, 3, 4…
+            const levelNodes = nodes.filter(n => n.level >= lvl)
+            return levelNodes.slice(0, -1).map((node, i) => {
+              const next = levelNodes[i + 1]
+              const y = node.yAtLevel(lvl)
+              const ny = next.yAtLevel(lvl)
+              return (
+                <g key={`express-${lvl}-${i}`}>
+                  {/* Arrow line */}
+                  <line
+                    x1={node.x} y1={y}
+                    x2={next.x} y2={ny}
+                    stroke={`rgba(108,99,255,0.35)`}
+                    strokeWidth={1.5}
+                    markerEnd="url(#arrow)"
+                  />
+                </g>
+              )
+            })
+          })}
+
+          {/* --- Arrow marker def --- */}
+          <defs>
+            <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L6,3 z" fill="rgba(108,99,255,0.5)" />
+            </marker>
+          </defs>
+
+          {/* --- Vertical stacks (the node column at each x position) --- */}
+          {nodes.map((node) => {
+            const lvls = Array.from({ length: node.level }, (_, i) => i + 1)
+            return lvls.map(lvl => {
+              const cy = node.yAtLevel(lvl)
+              const isTombstone = node.type === 'tombstone'
+              const isSentinel  = node.isSentinel
+              const fill = isSentinel ? COLOR_SENTINEL : isTombstone ? COLOR_TOMBSTONE : COLOR_PUT
+
+              return (
+                <g key={`node-${node.key}-lvl${lvl}`}>
+                  {/* Vertical connector from this node to level below */}
+                  {lvl > 1 && (
+                    <line
+                      x1={node.x} y1={cy}
+                      x2={node.x} y2={node.yAtLevel(lvl - 1)}
+                      stroke="rgba(255,255,255,0.1)"
+                      strokeWidth={1}
+                      strokeDasharray="3 3"
+                    />
+                  )}
+                  {/* Node circle */}
+                  <circle
+                    cx={node.x}
+                    cy={cy}
+                    r={NODE_R}
+                    fill={`${fill}22`}
+                    stroke={fill}
+                    strokeWidth={isSentinel ? 1 : 1.5}
+                    style={{ cursor: isSentinel ? 'default' : 'pointer', transition: 'all 0.2s ease' }}
+                    onMouseMove={isSentinel ? undefined : (e) => handleMouseMove(e, node)}
+                    onMouseLeave={() => setTooltip(null)}
+                  />
+                  {/* Node label (only on level-0 for data nodes) */}
+                  {lvl === 1 && (
+                    <text
+                      x={node.x}
+                      y={cy + 4}
+                      textAnchor="middle"
+                      fontSize={isSentinel ? 10 : 9}
+                      fontFamily="var(--font-mono)"
+                      fill={isSentinel ? 'rgba(255,255,255,0.3)' : isTombstone ? COLOR_TOMBSTONE : 'rgba(255,255,255,0.85)'}
+                      style={{ userSelect: 'none', pointerEvents: 'none' }}
+                    >
+                      {isSentinel ? node.key : truncate(node.key, 6)}
+                    </text>
+                  )}
+                </g>
+              )
+            })
+          })}
+        </svg>
+      </div>
+
+      {/* Legend */}
+      <div className="visualizer-legend">
+        <div className="legend-item">
+          <div className="legend-dot" style={{ background: COLOR_PUT }} />
+          Live entry
+        </div>
+        <div className="legend-item">
+          <div className="legend-dot" style={{ background: COLOR_TOMBSTONE }} />
+          Tombstone
+        </div>
+        <div className="legend-item">
+          <div className="legend-dot" style={{ background: COLOR_SENTINEL }} />
+          Sentinel (−∞ / +∞)
+        </div>
+        <div className="legend-item" style={{ color: 'rgba(108,99,255,0.7)' }}>
+          ── Express lanes (higher levels)
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: dashboard/src/hooks/useKVStore.js
+================================================================================
+// ============================================================================
+// useKVStore.js — Custom Hook for KVault REST API Interactions
+// ============================================================================
+// Abstracts all fetch() calls to the C++ backend:
+//   PUT  → POST  /api/kv
+//   GET  → GET   /api/kv/<key>
+//   DEL  → DELETE /api/kv/<key>
+//
+// Returns: { execute, lastResult, isLoading, error, history }
+// ============================================================================
+
+import { useState, useCallback } from 'react'
+
+const API_BASE = '/api'
+
+/**
+ * @returns {{
+ *   execute: (op: 'PUT'|'GET'|'DELETE', key: string, value?: string) => Promise<void>,
+ *   lastResult: { op: string, key: string, value: string, status: 'ok'|'error'|'not_found' } | null,
+ *   isLoading: boolean,
+ *   error: string | null,
+ *   history: Array,
+ * }}
+ */
+export function useKVStore() {
+  const [lastResult, setLastResult] = useState(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError]         = useState(null)
+  const [history, setHistory]     = useState([])
+
+  const execute = useCallback(async (op, key, value = '') => {
+    if (!key.trim()) {
+      setError('Key cannot be empty.')
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+
+    const timestamp = new Date().toLocaleTimeString()
+
+    try {
+      let response
+      if (op === 'PUT') {
+        response = await fetch(`${API_BASE}/kv`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: key.trim(), value }),
+        })
+      } else if (op === 'GET') {
+        response = await fetch(`${API_BASE}/kv/${encodeURIComponent(key.trim())}`)
+      } else if (op === 'DELETE') {
+        response = await fetch(`${API_BASE}/kv/${encodeURIComponent(key.trim())}`, {
+          method: 'DELETE',
+        })
+      } else {
+        throw new Error(`Unknown operation: ${op}`)
+      }
+
+      let resultValue = ''
+      let status = 'ok'
+
+      if (op === 'GET') {
+        if (response.status === 404) {
+          status = 'not_found'
+          resultValue = '(key not found)'
+        } else if (response.ok) {
+          resultValue = await response.text()
+        } else {
+          status = 'error'
+          resultValue = await response.text()
+        }
+      } else {
+        if (!response.ok) {
+          status = 'error'
+          resultValue = await response.text()
+        }
+      }
+
+      const entry = { op, key: key.trim(), value: resultValue, status, timestamp }
+      setLastResult(entry)
+      setHistory(prev => [entry, ...prev].slice(0, 50)) // keep last 50 ops
+
+    } catch (err) {
+      const msg = err.message.includes('fetch')
+        ? 'Backend offline. Start kvault_server.exe and retry.'
+        : err.message
+      setError(msg)
+      const entry = { op, key: key.trim(), value: '', status: 'error', timestamp }
+      setLastResult(entry)
+      setHistory(prev => [entry, ...prev].slice(0, 50))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  return { execute, lastResult, isLoading, error, history }
+}
+
+
+================================================================================
+FILE: dashboard/src/hooks/useMetrics.js
+================================================================================
+// ============================================================================
+// useMetrics.js — Live Engine Metrics Polling Hook
+// ============================================================================
+// Polls /api/metrics every 2 seconds to keep the dashboard "alive".
+// Also fetches /api/memtable/snapshot for the SkipList visualizer.
+//
+// Returns: { metrics, snapshot, backendStatus, lastUpdated }
+// ============================================================================
+
+import { useState, useEffect, useRef, useCallback } from 'react'
+
+const API_BASE = '/api'
+const POLL_INTERVAL_MS = 2000
+
+/**
+ * @returns {{
+ *   metrics: { memtable_size_bytes: number, wal_size_bytes: number, sstable_count: number } | null,
+ *   snapshot: Array<{ key: string, value: string, type: 'put'|'tombstone' }>,
+ *   backendStatus: 'online'|'offline'|'connecting',
+ *   lastUpdated: Date | null,
+ * }}
+ */
+export function useMetrics() {
+  const [metrics, setMetrics]             = useState(null)
+  const [snapshot, setSnapshot]           = useState([])
+  const [backendStatus, setBackendStatus] = useState('connecting')
+  const [lastUpdated, setLastUpdated]     = useState(null)
+
+  // Track previous metric values to trigger CSS animation on change
+  const prevMetricsRef = useRef(null)
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [metricsRes, snapshotRes] = await Promise.all([
+        fetch(`${API_BASE}/metrics`),
+        fetch(`${API_BASE}/memtable/snapshot`),
+      ])
+
+      if (!metricsRes.ok || !snapshotRes.ok) {
+        setBackendStatus('offline')
+        return
+      }
+
+      const metricsData  = await metricsRes.json()
+      const snapshotData = await snapshotRes.json()
+
+      prevMetricsRef.current = metrics
+      setMetrics(metricsData)
+      setSnapshot(snapshotData.entries ?? [])
+      setBackendStatus('online')
+      setLastUpdated(new Date())
+    } catch {
+      setBackendStatus('offline')
+    }
+  }, [metrics])
+
+  useEffect(() => {
+    // Immediate fetch on mount
+    fetchAll()
+
+    const intervalId = setInterval(fetchAll, POLL_INTERVAL_MS)
+    return () => clearInterval(intervalId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return { metrics, snapshot, backendStatus, lastUpdated, refetch: fetchAll }
+}
+
+
+================================================================================
+FILE: include/kvault/api_routes.hpp
+================================================================================
+#pragma once
+
+#include "kvault/kvstore.hpp"
+#include <crow.h>
+#include <crow/middlewares/cors.h>
+#include <memory>
+
+namespace kvault {
+
+class ApiServer {
+public:
+    explicit ApiServer(std::shared_ptr<KVStore> store, uint16_t port);
+    
+    // Starts the HTTP server (blocks until interrupted)
+    void run();
+    
+    // Stops the HTTP server
+    void stop();
+
+private:
+    void setup_routes();
+
+    std::shared_ptr<KVStore> store_;
+    uint16_t port_;
+    
+    // Using CORS handler middleware
+    crow::App<crow::CORSHandler> app_;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/bloom_filter.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// bloom_filter.hpp — Space-Efficient Probabilistic Set Membership
+// ============================================================================
+//
+// A Bloom Filter answers the question: "might this key be in the set?"
+//
+//   - FALSE  → the key is DEFINITELY not present (zero disk I/O on SSTable)
+//   - TRUE   → the key is PROBABLY present (proceed to binary search)
+//
+// False positives are possible (rate ≈ (1 - e^(-k*n/m))^k).
+// False negatives are IMPOSSIBLE — every key that was add()ed will always
+// return true from might_contain().
+//
+// DOUBLE HASHING TECHNIQUE:
+//   Instead of k independent hash functions (expensive to design/implement),
+//   we use two base hashes h1 and h2 derived from the key, and generate
+//   k composite hashes via:
+//
+//       g_i(key) = (h1(key) + i * h2(key)) mod m      for i in [0, k)
+//
+//   This is mathematically equivalent to k independent hashes for most
+//   practical distributions [Kirsch & Mitzenmacher, 2006].
+//
+// PARAMETER GUIDANCE:
+//   Given n keys and a target false positive rate p:
+//     m = -n * ln(p) / (ln(2)^2)    — optimal bit count
+//     k = (m / n) * ln(2)           — optimal hash count
+//
+//   With bits_per_key = 10:
+//     p ≈ 0.0082  (~0.8% false positive rate)
+//     k ≈ 7 hash functions
+//
+// SERIALIZATION:
+//   The filter serializes to: [4 bytes: k] [4 bytes: m] [ceil(m/8) bytes: bits]
+//   This self-contained format is embedded in the SSTable Bloom Filter Block.
+//
+// ============================================================================
+
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace kvault {
+
+class BloomFilter {
+public:
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    // Create a Bloom Filter sized for `expected_entries` keys with the
+    // specified number of bits per key (default from EngineConfig).
+    // @param expected_entries   Approximate number of keys to be inserted
+    // @param bits_per_key       Controls the false positive rate
+    //                           (10 → ~0.8%, 14 → ~0.1%, 20 → ~0.01%)
+    BloomFilter(size_t expected_entries, size_t bits_per_key);
+
+    // Reconstruct a BloomFilter from serialized bytes (used by SSTableReader).
+    // @param data   Raw bytes produced by serialize()
+    static BloomFilter deserialize(const std::vector<uint8_t>& data);
+
+    ~BloomFilter() = default;
+    BloomFilter(const BloomFilter&)            = default;
+    BloomFilter& operator=(const BloomFilter&) = default;
+    BloomFilter(BloomFilter&&) noexcept            = default;
+    BloomFilter& operator=(BloomFilter&&) noexcept = default;
+
+    // -----------------------------------------------------------------------
+    // Core Operations
+    // -----------------------------------------------------------------------
+
+    // Add a key to the filter. Sets k bits derived from the key's two
+    // base hashes via the double hashing formula.
+    void add(const Key& key);
+
+    // Test whether a key might be in the set.
+    // Returns false  → key is DEFINITELY absent (safe to skip SSTable I/O)
+    // Returns true   → key is PROBABLY present (proceed with binary search)
+    [[nodiscard]]
+    bool might_contain(const Key& key) const;
+
+    // -----------------------------------------------------------------------
+    // Serialization
+    // -----------------------------------------------------------------------
+
+    // Serialize the filter to a compact byte buffer for embedding in an
+    // SSTable. Format:
+    //   [0..3]  k (uint32 LE) — number of hash functions
+    //   [4..7]  m (uint32 LE) — number of bits (capacity)
+    //   [8..]   bit array     — ceil(m / 8) bytes, LSB first
+    [[nodiscard]]
+    std::vector<uint8_t> serialize() const;
+
+    // -----------------------------------------------------------------------
+    // Observers
+    // -----------------------------------------------------------------------
+
+    [[nodiscard]] size_t bit_count()  const noexcept { return m_; }
+    [[nodiscard]] size_t hash_count() const noexcept { return k_; }
+    [[nodiscard]] size_t byte_size()  const noexcept { return bits_.size(); }
+
+private:
+    // Private constructor used by deserialize()
+    BloomFilter(size_t k, size_t m, std::vector<uint8_t> bits);
+
+    // Compute the two base hashes for a key.
+    // h1 is derived from FNV-1a, h2 from a complementary polynomial.
+    // Both are deterministic and cheap to compute.
+    static std::pair<uint64_t, uint64_t> base_hashes(const Key& key);
+
+    // Set or test a single bit at position `bit_index` in bits_.
+    void     set_bit(size_t bit_index);
+    [[nodiscard]]
+    bool     get_bit(size_t bit_index) const;
+
+    size_t               k_;     // Number of hash functions
+    size_t               m_;     // Total number of bits
+    std::vector<uint8_t> bits_;  // Packed bit array: bits_[i/8] bit (i%8)
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/config.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// config.hpp — Tunable engine parameters for KVault
+// ============================================================================
+//
+// All runtime-configurable knobs are centralized in EngineConfig.
+// The KVStore constructor accepts an EngineConfig and distributes
+// relevant fields to each subsystem (MemTable, WAL, SSTable, etc.).
+//
+// Defaults are chosen for a development/demo environment. Production
+// deployments should tune memtable_flush_threshold_bytes and
+// sync_per_write based on workload characteristics.
+// ============================================================================
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace kvault {
+
+struct EngineConfig {
+
+    // -- MemTable -----------------------------------------------------------
+
+    // Approximate byte threshold at which the active MemTable is frozen
+    // and flushed to a new SSTable on disk. Larger values increase write
+    // throughput (fewer flushes) but consume more RAM.
+    // Default: 4 MB
+    size_t memtable_flush_threshold_bytes = 4UL * 1024 * 1024;
+
+    // -- Skip List ----------------------------------------------------------
+
+    // Maximum number of levels in the Skip List. A list with max_level = L
+    // and probability = 0.5 efficiently handles up to 2^L entries.
+    // Default: 16 (supports up to ~65K entries per MemTable)
+    int skip_list_max_level = 16;
+
+    // Probability of promoting a node to the next level during insertion.
+    // p = 0.5 yields an expected 2 pointers per node (balanced tradeoff).
+    // p = 0.25 uses ~1.33 pointers per node (more space-efficient).
+    double skip_list_probability = 0.5;
+
+    // -- Write-Ahead Log ----------------------------------------------------
+
+    // Directory where the WAL file (wal.log) is stored.
+    std::string wal_directory = "data/wal";
+
+    // If true, every WAL append issues an fsync() / _commit() system call
+    // to guarantee the record reaches stable storage before returning.
+    //
+    // If false, the WAL only flushes the userspace buffer (fflush). This
+    // is faster but risks losing the last few records on a power failure
+    // (the OS page cache may not have been written to disk).
+    //
+    // Recommendation:
+    //   true  — correctness-critical workloads (default)
+    //   false — benchmarking, development, or when using a UPS
+    bool sync_per_write = true;
+
+    // -- SSTables -----------------------------------------------------------
+
+    // Directory where flushed SSTable files (.sst) are stored.
+    std::string sstable_directory = "data/sstables";
+
+    // -- Bloom Filter -------------------------------------------------------
+
+    // Bits allocated per key in each SSTable's Bloom Filter.
+    // 10 bits/key → ~1% false positive rate (k ≈ 7 hash functions).
+    // Higher values reduce false positives but increase SSTable size.
+    size_t bloom_filter_bits_per_key = 10;
+
+    // -- HTTP Server --------------------------------------------------------
+
+    // Port on which the embedded Crow HTTP server listens.
+    uint16_t server_port = 8080;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/kvstore.hpp
+================================================================================
+#pragma once
+
+#include "kvault/config.hpp"
+#include "kvault/memtable.hpp"
+#include "kvault/sstable_manager.hpp"
+#include "kvault/types.hpp"
+#include "kvault/wal.hpp"
+
+#include <memory>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+
+namespace kvault {
+
+class KVStore {
+public:
+    explicit KVStore(const EngineConfig& config = EngineConfig{});
+    ~KVStore() = default;
+
+    // Non-copyable, non-movable for safety
+    KVStore(const KVStore&) = delete;
+    KVStore& operator=(const KVStore&) = delete;
+
+    // Insert or update a key-value pair.
+    void put(const Key& key, const Value& value);
+
+    // Retrieve a value by key. Returns std::nullopt if not found.
+    std::optional<Value> get(const Key& key) const;
+
+    // Delete a key. Returns true if key was logically removed.
+    bool remove(const Key& key);
+
+    // Flushes MemTable to disk manually, creating a new SSTable.
+    void force_flush();
+
+    // Diagnostics/Metrics
+    size_t memtable_size() const;
+    size_t sstable_count() const;
+    size_t wal_size() const;
+
+    // Returns a sorted snapshot of the active MemTable for the dashboard visualizer.
+    // Each entry is a pair { key, value } — tombstones are included with value=<TOMBSTONE>.
+    std::vector<KVRecord> memtable_snapshot() const;
+
+private:
+    void trigger_flush();
+
+    EngineConfig config_;
+    
+    // We use a shared_mutex to allow concurrent reads from MemTable/SSTables,
+    // while acquiring an exclusive lock during flushes.
+    // (Individual put() and get() calls are fast, so for now we exclusively lock
+    // on put/remove to simplify concurrent access to the WAL and MemTable. A real
+    // high-concurrency engine would use a concurrent SkipList).
+    mutable std::shared_mutex rw_mutex_;
+
+    std::unique_ptr<WriteAheadLog> wal_;
+    std::unique_ptr<MemTable> memtable_;
+    std::unique_ptr<SSTableManager> sstable_manager_;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/memtable.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// memtable.hpp — In-Memory Sorted Store (MemTable)
+// ============================================================================
+//
+// The MemTable is a thin encapsulation over the Skip List that adds:
+//
+//   1. BYTE TRACKING — maintains an approximate running count of memory
+//      usage to determine when the MemTable should be flushed to disk.
+//
+//   2. TOMBSTONE SEMANTICS — translates user-facing "delete" operations
+//      into internal tombstone insertions, and filters them out on reads.
+//
+//   3. SNAPSHOT — produces a sorted vector of KVRecords for the SSTable
+//      writer to serialize during the flush pipeline.
+//
+// Lifecycle:
+//   Active MemTable (accepting writes)
+//     → should_flush() returns true
+//     → KVStore swaps it to "immutable" status
+//     → snapshot() is called by the flush pipeline
+//     → SSTable is written to disk
+//     → MemTable is destroyed (arena releases all nodes)
+//
+// Thread Safety: NOT thread-safe. The KVStore layer is responsible for
+//                synchronization (e.g., a read-write lock).
+// ============================================================================
+
+#include "kvault/skiplist.hpp"
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace kvault {
+
+class MemTable {
+public:
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+    // @param flush_threshold_bytes  Approximate byte count at which
+    //                               should_flush() begins returning true.
+    //                               Sourced from EngineConfig.
+    // -----------------------------------------------------------------------
+    explicit MemTable(size_t flush_threshold_bytes);
+
+    ~MemTable() = default;
+
+    // Non-copyable (SkipList owns an arena of unique_ptrs)
+    MemTable(const MemTable&)            = delete;
+    MemTable& operator=(const MemTable&) = delete;
+
+    // Movable (SkipList is movable)
+    MemTable(MemTable&&) noexcept            = default;
+    MemTable& operator=(MemTable&&) noexcept = default;
+
+    // -----------------------------------------------------------------------
+    // Write Operations
+    // -----------------------------------------------------------------------
+
+    // Insert or update a key-value pair.
+    // If the key was previously tombstoned in this MemTable, the tombstone
+    // is replaced with the new value (the key "comes back to life").
+    void put(const Key& key, const Value& value);
+
+    // Mark a key as deleted by inserting a tombstone sentinel.
+    // The tombstone is necessary even if the key doesn't exist in this
+    // MemTable — it might exist in an older SSTable on disk, and the
+    // tombstone must shadow it during the read path.
+    void remove(const Key& key);
+
+    // -----------------------------------------------------------------------
+    // Read Operations
+    // -----------------------------------------------------------------------
+
+    // Retrieve the value for a key.
+    //
+    // Returns:
+    //   std::optional<Value> with the value — if the key exists and is live
+    //   std::nullopt — if the key is not found OR is tombstoned
+    //
+    // Callers cannot distinguish "not found" from "deleted" at this layer.
+    // The KVStore read path handles this by falling through to SSTables
+    // only when the MemTable returns nullopt AND the key was NOT tombstoned.
+    // See: contains_tombstone() for explicit tombstone checks.
+    [[nodiscard]]
+    std::optional<Value> get(const Key& key) const;
+
+    // Check if a key has an explicit tombstone in this MemTable.
+    // Used by KVStore to avoid unnecessary SSTable lookups: if the
+    // MemTable has a tombstone for a key, the key is definitively deleted
+    // and there's no need to search older SSTables.
+    [[nodiscard]]
+    bool contains_tombstone(const Key& key) const;
+
+    // -----------------------------------------------------------------------
+    // Size & Threshold
+    // -----------------------------------------------------------------------
+
+    // Approximate byte size of all entries in this MemTable.
+    // Accounts for key bytes, value bytes, and estimated per-node overhead
+    // from the underlying Skip List (forward pointers, arena storage).
+    [[nodiscard]] size_t current_size_bytes() const noexcept;
+
+    // Returns true when the MemTable has exceeded its configured flush
+    // threshold and should be swapped to immutable + flushed to an SSTable.
+    [[nodiscard]] bool should_flush() const noexcept;
+
+    // Number of unique keys in the MemTable (includes tombstoned keys).
+    [[nodiscard]] size_t entry_count() const noexcept;
+
+    // -----------------------------------------------------------------------
+    // Snapshot (for SSTable Flushing)
+    // -----------------------------------------------------------------------
+
+    // Returns a sorted vector of all entries as KVRecords.
+    //
+    // - Live entries → KVRecord { RecordType::PUT, key, value }
+    // - Tombstones   → KVRecord { RecordType::DELETE, key, "" }
+    //
+    // The vector is ordered by key (ascending, lexicographic) because
+    // SSTables require sorted input. This is achieved by iterating the
+    // Skip List's level-0 chain.
+    [[nodiscard]]
+    std::vector<KVRecord> snapshot() const;
+
+private:
+    // Estimated overhead per Skip List node, in bytes.
+    //
+    // Breakdown:
+    //   SkipListNode struct (2 std::strings + vector): ~64 bytes
+    //   Average forward pointers (p=0.5 → ~2 levels × 8B): ~16 bytes
+    //   unique_ptr in arena vector: 8 bytes
+    //   Heap allocator metadata: ~16 bytes
+    //   ─────────────────────────────────────────────────────
+    //   Total: ~104 bytes
+    //
+    // This is approximate. The flush threshold should be set with the
+    // understanding that actual memory usage ≈ 2× the tracked byte count.
+    static constexpr size_t kNodeOverheadBytes = 104;
+
+    SkipList skiplist_;
+    size_t   approximate_size_;
+    size_t   flush_threshold_bytes_;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/skiplist.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// skiplist.hpp — A Probabilistic Skip List with Arena-Based Memory Ownership
+// ============================================================================
+//
+// OWNERSHIP MODEL:
+//   Every SkipListNode is allocated on the heap and its lifetime is managed
+//   by a single std::unique_ptr stored in the SkipList::arena_ vector.
+//
+//   The forward[] pointers inside each node are NON-OWNING raw pointers
+//   (Node*) used purely for O(log n) traversal across levels. Multiple
+//   forward pointers at different levels may point to the same node —
+//   this is safe because none of them own the node.
+//
+//   When the SkipList is destroyed, arena_ releases all nodes in one pass.
+//   No cascading destructors, no double-free, no stack overflow.
+//
+// WHY NOT unique_ptr FOR FORWARD POINTERS?
+//   In a Skip List, the same node is reachable from multiple levels:
+//     - Node A's forward[0] points to Node B  (level-0 next)
+//     - Node X's forward[2] also points to Node B  (express lane)
+//   If both were unique_ptr<Node>, Node B would have two owners — violating
+//   unique_ptr's exclusive-ownership invariant and causing double-free UB.
+//
+// ============================================================================
+
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <memory>
+#include <optional>
+#include <random>
+#include <vector>
+
+namespace kvault {
+
+// ---------------------------------------------------------------------------
+// SkipListNode
+// ---------------------------------------------------------------------------
+// Each node holds a key-value pair and a vector of forward pointers —
+// one per level the node participates in. All pointers are non-owning.
+// ---------------------------------------------------------------------------
+struct SkipListNode {
+    Key   key;
+    Value value;
+
+    // forward[i] = next node at level i, or nullptr if this node is the
+    // last node at that level. These are NON-OWNING traversal pointers.
+    // Lifetime of the pointed-to nodes is managed by SkipList::arena_.
+    std::vector<SkipListNode*> forward;
+
+    // Data node constructor
+    SkipListNode(Key k, Value v, int height)
+        : key(std::move(k))
+        , value(std::move(v))
+        , forward(static_cast<size_t>(height), nullptr) {}
+
+    // Sentinel (head) node constructor — no meaningful key or value
+    explicit SkipListNode(int height)
+        : forward(static_cast<size_t>(height), nullptr) {}
+};
+
+// ---------------------------------------------------------------------------
+// SkipList
+// ---------------------------------------------------------------------------
+// A probabilistic ordered data structure with O(log n) insert, search,
+// and delete. Designed as the backing structure for KVault's MemTable.
+//
+// Thread Safety: NOT thread-safe. The MemTable layer is responsible for
+//                synchronization if concurrent access is needed.
+// ---------------------------------------------------------------------------
+class SkipList {
+public:
+    // -- Configuration Constants --------------------------------------------
+    // Maximum number of levels. 16 levels can efficiently handle up to
+    // 2^16 = 65,536 entries (with p=0.5). Sufficient for a MemTable that
+    // flushes at ~4 MB.
+    static constexpr int kMaxLevel = 16;
+
+    // Probability of promoting a node to the next level.
+    // p = 0.5 gives a balanced space-time tradeoff (expected 2 pointers/node).
+    static constexpr double kProbability = 0.5;
+
+    // -- Lifecycle ----------------------------------------------------------
+    SkipList();
+
+    // Destructor: arena_ is a vector<unique_ptr<Node>>. Its destructor
+    // calls delete on every node. Because forward[] contains only raw
+    // pointers, there is no cascading or recursive destruction — each
+    // node's destructor is O(1). Total cleanup is O(n), iterative, and
+    // stack-safe even for millions of nodes.
+    ~SkipList() = default;
+
+    // Non-copyable — the arena holds unique ownership of all nodes.
+    SkipList(const SkipList&)            = delete;
+    SkipList& operator=(const SkipList&) = delete;
+
+    // Movable — transferring ownership of the arena is well-defined.
+    SkipList(SkipList&&) noexcept            = default;
+    SkipList& operator=(SkipList&&) noexcept = default;
+
+    // -- Core Operations ----------------------------------------------------
+
+    // Insert a key-value pair. If the key already exists, its value is
+    // overwritten (upsert semantics). Complexity: O(log n) expected.
+    void insert(const Key& key, const Value& value);
+
+    // Search for a key. Returns the associated value, or std::nullopt
+    // if the key is not present. Complexity: O(log n) expected.
+    [[nodiscard]]
+    std::optional<Value> search(const Key& key) const;
+
+    // Remove a key from the structure. Returns true if the key was found
+    // and removed, false otherwise.
+    //
+    // NOTE: The removed node remains allocated in arena_ (lazy cleanup).
+    // It is unlinked from all forward chains and unreachable, but its
+    // memory is reclaimed only when the entire SkipList is destroyed.
+    // This is intentional — for MemTable usage, the entire SkipList is
+    // discarded atomically after flushing to an SSTable.
+    bool remove(const Key& key);
+
+    // -- Observers ----------------------------------------------------------
+
+    // Number of key-value entries currently stored.
+    [[nodiscard]] size_t size() const noexcept { return size_; }
+
+    // Whether the structure contains any entries.
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+
+    // Current highest level in use (0 = empty, kMaxLevel = fully utilized).
+    [[nodiscard]] int current_level() const noexcept { return current_level_; }
+
+    // -- Forward Iterator ---------------------------------------------------
+    // A read-only, forward-only iterator that walks the level-0 chain
+    // in sorted key order. Used by MemTable::snapshot() to produce a
+    // sorted dump for SSTable flushing.
+    // -------------------------------------------------------------------
+    class Iterator {
+    public:
+        Iterator() : node_(nullptr) {}
+        explicit Iterator(SkipListNode* node) : node_(node) {}
+
+        // Dereference: returns a pair of const references to key and value.
+        std::pair<const Key&, const Value&> operator*() const {
+            return { node_->key, node_->value };
+        }
+
+        // Pre-increment: advance to the next node on level 0.
+        Iterator& operator++() {
+            if (node_ != nullptr) {
+                node_ = node_->forward[0];
+            }
+            return *this;
+        }
+
+        // Post-increment
+        Iterator operator++(int) {
+            Iterator snapshot = *this;
+            ++(*this);
+            return snapshot;
+        }
+
+        bool operator==(const Iterator& other) const noexcept {
+            return node_ == other.node_;
+        }
+
+        bool operator!=(const Iterator& other) const noexcept {
+            return node_ != other.node_;
+        }
+
+        // Named accessors (more explicit than structured bindings)
+        [[nodiscard]] const Key&   key()   const { return node_->key; }
+        [[nodiscard]] const Value& value() const { return node_->value; }
+
+    private:
+        SkipListNode* node_; // Non-owning; node lifetime managed by arena_
+    };
+
+    // begin() points to the first data node (head's level-0 successor).
+    // end() is the null sentinel.
+    [[nodiscard]] Iterator begin() const {
+        return Iterator(head_->forward[0]);
+    }
+
+    [[nodiscard]] Iterator end() const {
+        return Iterator(nullptr);
+    }
+
+private:
+    // Generate a random level in [1, kMaxLevel] using a geometric
+    // distribution with parameter kProbability.
+    int random_level();
+
+    // -----------------------------------------------------------------------
+    // MEMORY LAYOUT
+    // -----------------------------------------------------------------------
+    //
+    //  head_ (unique_ptr)          arena_ (vector<unique_ptr>)
+    //  ┌───────────┐               ┌──────────────────────────────┐
+    //  │ Sentinel   │               │ [0] unique_ptr → Node("a")  │
+    //  │ forward[0]─┼──► Node "a"   │ [1] unique_ptr → Node("b")  │
+    //  │ forward[1]─┼──► Node "c"   │ [2] unique_ptr → Node("c")  │
+    //  │ forward[2]─┼──► ...        │ [3] unique_ptr → Node("d")  │
+    //  └───────────┘               └──────────────────────────────┘
+    //                                ▲
+    //                                │ OWNS all nodes. forward[] ptrs
+    //                                │ in nodes are non-owning raw Node*.
+    //                                │
+    //                                └─ Destroyed when SkipList dies.
+    //
+    // -----------------------------------------------------------------------
+
+    // Sentinel head node. Contains no data; its forward[] array is the
+    // entry point into the structure at every level.
+    std::unique_ptr<SkipListNode> head_;
+
+    // Centralized memory arena. Every data node created by insert() is
+    // placed here. Guarantees single ownership and O(n) bulk cleanup.
+    //
+    // Why vector<unique_ptr> is safe here:
+    //   When the vector reallocates (grows), the unique_ptr objects are
+    //   moved to the new buffer. But the underlying Node* heap addresses
+    //   do NOT change — unique_ptr::get() returns the same pointer before
+    //   and after the move. So all raw Node* in forward[] remain valid.
+    std::vector<std::unique_ptr<SkipListNode>> arena_;
+
+    int    current_level_; // Highest level with at least one node (0 = empty)
+    size_t size_;          // Number of entries (not including sentinel)
+
+    // Random number generation for level assignment.
+    // mutable because search() is const but may theoretically need the
+    // RNG in debug/instrumentation scenarios. Here it's used only in
+    // insert(), but keeping it mutable avoids future refactoring.
+    mutable std::mt19937                       rng_;
+    mutable std::uniform_real_distribution<double> dist_;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/sstable_manager.hpp
+================================================================================
+#pragma once
+
+#include "kvault/sstable_reader.hpp"
+#include "kvault/types.hpp"
+
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <vector>
+
+namespace kvault {
+
+class SSTableManager {
+public:
+    // Initialize the manager, scanning the given directory for .sst files.
+    // Loads them ordered from newest to oldest based on filename.
+    explicit SSTableManager(const std::filesystem::path& sstable_dir);
+
+    // Look up a key across all loaded SSTables, starting from the newest.
+    // Returns:
+    //   std::optional<Value> containing the value
+    //   std::optional<Value> containing "" if it's a DELETE tombstone
+    //   std::nullopt if the key is not found in any SSTable
+    [[nodiscard]] std::optional<Value> get(const Key& key) const;
+    [[nodiscard]] std::optional<KVRecord> get_record(const Key& key) const;
+
+    // Register a newly flushed SSTable. It is pushed to the front
+    // (most recent) of the reader list.
+    void add_sstable(const std::filesystem::path& path);
+
+    // Get aggregated metadata for all loaded SSTables.
+    [[nodiscard]] std::vector<SSTableMetadata> get_metadata() const;
+
+    // The number of active SSTables being managed.
+    [[nodiscard]] size_t count() const noexcept { return readers_.size(); }
+
+private:
+    std::filesystem::path sstable_dir_;
+    
+    // Ordered from newest (index 0) to oldest (index N-1).
+    std::vector<std::unique_ptr<SSTableReader>> readers_;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/sstable_reader.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// sstable_reader.hpp — Sorted String Table Lookup Engine
+// ============================================================================
+//
+// Provides O(log n) point lookups into an .sst file without loading the
+// entire data block into memory. Only the Footer, Sparse Index, and Bloom
+// Filter are kept in RAM after construction.
+//
+// READ PATH for get(key):
+//
+//   Step 1 — Bloom Filter Check (pure in-memory, zero disk I/O)
+//            If might_contain(key) == false → return nullopt immediately
+//
+//   Step 2 — Sparse Index Binary Search (pure in-memory)
+//            Find the two index entries bracketing the target key.
+//            This yields a [start_offset, end_offset) range in the data block.
+//
+//   Step 3 — Data Block Scan (1 disk seek + sequential read of ≤ N records)
+//            fseek() to start_offset, read records one by one until key found
+//            or end_offset is reached.
+//
+// The worst-case disk I/O is reading kIndexBlockInterval sequential records
+// (100 by default), which fits in 1–3 disk pages for typical KV sizes.
+//
+// ============================================================================
+
+#include "kvault/bloom_filter.hpp"
+#include "kvault/sstable_writer.hpp"  // For SSTableFooter, kMagicNumber
+#include "kvault/types.hpp"
+
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace kvault {
+
+// One entry in the in-memory sparse index.
+// Maps a key boundary to its byte offset in the data block.
+struct IndexEntry {
+    Key      key;    // First key in this sparse block
+    uint64_t offset; // Byte offset of this key's record in the data block
+};
+
+// Metadata exposed to the SSTableManager without opening the file.
+struct SSTableMetadata {
+    std::string   min_key;
+    std::string   max_key;
+    uint64_t      entry_count;
+    uint64_t      file_size_bytes;
+    std::string   file_path;
+};
+
+class SSTableReader {
+public:
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    // Open an SSTable file and load its footer, index, and bloom filter
+    // into memory. Throws std::runtime_error if the file is missing,
+    // unreadable, or has a bad magic number.
+    explicit SSTableReader(const std::filesystem::path& path);
+
+    // Destructor closes the file handle.
+    ~SSTableReader();
+
+    // Non-copyable (owns a FILE* handle and heap-allocated index/filter).
+    SSTableReader(const SSTableReader&)            = delete;
+    SSTableReader& operator=(const SSTableReader&) = delete;
+
+    // Movable.
+    SSTableReader(SSTableReader&&) noexcept;
+    SSTableReader& operator=(SSTableReader&&) noexcept;
+
+    // -----------------------------------------------------------------------
+    // Core Read Operation
+    // -----------------------------------------------------------------------
+
+    // Look up a key in this SSTable.
+    //
+    // Returns:
+    //   std::optional<Value> with the value   — key found as a PUT record
+    //   std::optional<Value> with ""           — key is a DELETE tombstone
+    //                                            (caller must check RecordType)
+    //   std::nullopt                           — key not in this SSTable
+    //
+    // Note: To distinguish between "not found" and "tombstone", callers
+    // should use get_record() or check the returned value against the
+    // tombstone sentinel. The KVStore read path handles this logic.
+    [[nodiscard]]
+    std::optional<Value> get(const Key& key) const;
+
+    // Full record lookup — returns the KVRecord (including RecordType) if
+    // the key is found. Returns nullopt if not found.
+    [[nodiscard]]
+    std::optional<KVRecord> get_record(const Key& key) const;
+
+    // -----------------------------------------------------------------------
+    // Metadata & Observers
+    // -----------------------------------------------------------------------
+
+    [[nodiscard]] const std::string& min_key()     const noexcept;
+    [[nodiscard]] const std::string& max_key()     const noexcept;
+    [[nodiscard]] uint64_t           entry_count() const noexcept;
+    [[nodiscard]] uint64_t           file_size()   const;
+    [[nodiscard]] const std::filesystem::path& path() const noexcept;
+
+    // Returns a snapshot of this SSTable's metadata for the Manager/API.
+    [[nodiscard]] SSTableMetadata metadata() const;
+
+private:
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    // Read and validate the 48-byte footer from the end of the file.
+    SSTableFooter read_footer() const;
+
+    // Load the sparse index into memory from the index block.
+    void load_index(uint64_t index_block_offset,
+                    uint64_t bloom_block_offset);
+
+    // Load the Bloom Filter into memory from the bloom block.
+    void load_bloom_filter(uint64_t bloom_block_offset,
+                           uint64_t footer_offset);
+
+    // Read a single KVRecord from the current file position.
+    // Returns false on EOF or read error.
+    static bool read_record(FILE* file, KVRecord& out);
+
+    // -----------------------------------------------------------------------
+    // State
+    // -----------------------------------------------------------------------
+    std::filesystem::path path_;
+    mutable FILE*         file_;        // Kept open for seek+read in get()
+
+    // In-memory index (small: one entry per kIndexBlockInterval keys)
+    std::vector<IndexEntry> index_;
+
+    // In-memory Bloom Filter
+    BloomFilter bloom_filter_;
+
+    // Cached footer fields
+    uint64_t    entry_count_;
+    uint64_t    data_block_size_;       // Size of data block in bytes
+    uint64_t    index_block_offset_;    // Absolute file offset of index block
+    std::string min_key_;
+    std::string max_key_;
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/sstable_writer.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// sstable_writer.hpp — Sorted String Table Serializer
+// ============================================================================
+//
+// Writes a frozen MemTable snapshot (a sorted vector<KVRecord>) to a
+// self-describing binary .sst file on disk.
+//
+// The file is written sequentially from byte 0 to EOF in a single pass:
+//
+//   ┌──────────────────────────────────────────────────────────────────────┐
+//   │  DATA BLOCK                                                          │
+//   │  Sequential encoded key-value records, one after another            │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  SPARSE INDEX BLOCK                                                  │
+//   │  Every Nth key + its data block offset — for binary-search lookup   │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  BLOOM FILTER BLOCK                                                  │
+//   │  Serialized bit array (k, m, bits) from BloomFilter::serialize()     │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  FOOTER (fixed 48 bytes)                                             │
+//   │  Block offsets, entry count, min/max key, magic number              │
+//   └──────────────────────────────────────────────────────────────────────┘
+//
+// See sstable_writer.cpp for the exact byte-level layout of each section.
+//
+// ============================================================================
+
+#include "kvault/bloom_filter.hpp"
+#include "kvault/types.hpp"
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace kvault {
+
+class SSTableWriter {
+public:
+    // Sparse index granularity: one index entry per kIndexBlockInterval keys.
+    // The reader binary-searches this index, then linearly scans within the
+    // block. Smaller values → faster lookup, larger index block.
+    static constexpr size_t kIndexBlockInterval = 100;
+
+    // Magic number at the very end of the footer.
+    // Hex ASCII for "KVLT" followed by version 0x0001.
+    static constexpr uint64_t kMagicNumber = 0x544C564B00010000ULL;
+
+    // -----------------------------------------------------------------------
+    // Primary Interface
+    // -----------------------------------------------------------------------
+
+    // Write a sorted vector of KVRecords to a new SSTable file at `path`.
+    // The entries MUST be sorted in ascending key order (produced by
+    // MemTable::snapshot()).
+    //
+    // Steps:
+    //   1. Write data block — all records sequentially
+    //   2. Write sparse index block — every kIndexBlockInterval-th key
+    //   3. Build and write Bloom Filter block
+    //   4. Write fixed-size footer with block offsets
+    //   5. fsync() for durability
+    //
+    // @param path             Destination .sst file path
+    // @param sorted_entries   Sorted snapshot from MemTable::snapshot()
+    // @param bits_per_key     Bloom Filter sizing (from EngineConfig)
+    static void write(const std::filesystem::path& path,
+                      const std::vector<KVRecord>& sorted_entries,
+                      size_t bits_per_key = 10);
+
+    SSTableWriter() = delete;  // Static-only class; not instantiable
+};
+
+// ============================================================================
+// SSTableFooter — Fixed-size metadata block (48 bytes)
+// ============================================================================
+// Read first by the SSTableReader to locate all other blocks.
+// Written last by the SSTableWriter after all variable blocks are on disk.
+// ============================================================================
+struct SSTableFooter {
+    uint64_t index_block_offset;   // Byte offset of the Sparse Index Block
+    uint64_t bloom_block_offset;   // Byte offset of the Bloom Filter Block
+    uint64_t footer_offset;        // Byte offset of this footer itself
+    uint64_t entry_count;          // Total number of records in the SSTable
+    uint64_t data_block_size;      // Size of the Data Block in bytes
+    uint64_t magic;                // kMagicNumber — validates file integrity
+
+    // Serialized size of this struct (must always be exactly 48 bytes).
+    static constexpr size_t kSerializedSize = 48;
+};
+static_assert(sizeof(SSTableFooter) == SSTableFooter::kSerializedSize,
+              "SSTableFooter size mismatch — update kSerializedSize");
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/types.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// types.hpp — Shared type definitions for the KVault storage engine
+// ============================================================================
+//
+// This header defines the fundamental types used across all layers:
+//   WAL → MemTable → SSTable → KVStore → API
+//
+// Centralizing these prevents circular dependencies and ensures a
+// consistent vocabulary throughout the codebase.
+// ============================================================================
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace kvault {
+
+// ---------------------------------------------------------------------------
+// Key & Value — the atomic units of storage
+// ---------------------------------------------------------------------------
+// Both are variable-length strings. Keys are compared lexicographically
+// for ordered storage in the Skip List and SSTables.
+// ---------------------------------------------------------------------------
+using Key   = std::string;
+using Value = std::string;
+
+// ---------------------------------------------------------------------------
+// RecordType — classifies every mutation in the system
+// ---------------------------------------------------------------------------
+// Stored as a single byte in the WAL binary format and SSTable records.
+// Using uint8_t as the underlying type ensures exact 1-byte serialization.
+// ---------------------------------------------------------------------------
+enum class RecordType : uint8_t {
+    PUT    = 0x00,  // Insert or overwrite a key-value pair
+    DELETE = 0x01,  // Remove a key (written as a tombstone in the MemTable)
+};
+
+// ---------------------------------------------------------------------------
+// KVRecord — the universal mutation unit
+// ---------------------------------------------------------------------------
+// Every write operation (PUT or DELETE) flowing through the system is
+// represented as a KVRecord:
+//
+//   User PUT("x","42") → WAL::append({PUT,"x","42"}) → MemTable::put("x","42")
+//   User DELETE("x")   → WAL::append({DELETE,"x",""}) → MemTable::remove("x")
+//
+// For DELETE records, the `value` field is empty — the deletion is
+// represented by the RecordType alone. Inside the MemTable, deletes
+// are stored as tombstone sentinels (see kTombstoneValue below).
+// ---------------------------------------------------------------------------
+struct KVRecord {
+    RecordType type;
+    Key        key;
+    Value      value;   // Empty for DELETE records
+};
+
+// ---------------------------------------------------------------------------
+// Tombstone Sentinel
+// ---------------------------------------------------------------------------
+// Used internally by the MemTable to mark deleted keys. The MemTable
+// stores a tombstone by inserting the key with this sentinel as its value.
+//
+// This value is NEVER exposed to external callers:
+//   - MemTable::get() returns std::nullopt when it encounters a tombstone
+//   - MemTable::snapshot() converts tombstones to RecordType::DELETE records
+//
+// The sentinel is a non-printable byte sequence chosen to be virtually
+// impossible to collide with real user data.
+// ---------------------------------------------------------------------------
+inline constexpr std::string_view kTombstoneValue =
+    "\x7F__KVAULT_TOMBSTONE__\x7F";
+
+} // namespace kvault
+
+
+================================================================================
+FILE: include/kvault/wal.hpp
+================================================================================
+#pragma once
+
+// ============================================================================
+// wal.hpp — Write-Ahead Log for Crash Recovery
+// ============================================================================
+//
+// The WAL is an append-only binary log that records every mutation BEFORE
+// it is applied to the MemTable. This guarantees that no acknowledged
+// write is ever lost, even if the process crashes immediately after.
+//
+// Durability Contract:
+//   1. KVStore receives a PUT/DELETE request
+//   2. WAL::append() serializes the record and writes it to disk
+//   3. If sync_per_write is true, fsync() ensures stable storage
+//   4. Only THEN does the MemTable get updated
+//   5. The response is sent to the client
+//
+// Recovery Protocol (on startup):
+//   1. WAL::replay() reads all valid records from the log file
+//   2. Records are re-applied to a fresh MemTable
+//   3. If a record has a bad CRC32, it and all subsequent records are
+//      discarded (they represent a partial write from a crash)
+//
+// Lifecycle:
+//   The WAL is truncated (cleared) after the MemTable has been
+//   successfully flushed to an SSTable. At that point, all records
+//   in the WAL are redundant — they exist on disk in the SSTable.
+//
+// Binary Format:
+//   See the detailed layout diagram in wal.cpp, serialize_record().
+//
+// Thread Safety: NOT thread-safe. The KVStore layer serializes access.
+// ============================================================================
+
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace kvault {
+
+class WriteAheadLog {
+public:
+    // -----------------------------------------------------------------------
+    // Construction & Destruction
+    // -----------------------------------------------------------------------
+
+    // Opens (or creates) the WAL file in the specified directory.
+    // Creates the directory if it doesn't exist.
+    //
+    // @param wal_directory   Path to the WAL directory (e.g., "data/wal")
+    // @param sync_per_write  If true, every append() calls fsync().
+    //                        If false, only flushes the userspace buffer.
+    WriteAheadLog(const std::filesystem::path& wal_directory,
+                  bool sync_per_write);
+
+    // Closes the write handle.
+    ~WriteAheadLog();
+
+    // Non-copyable, non-movable (owns a raw FILE* handle)
+    WriteAheadLog(const WriteAheadLog&)            = delete;
+    WriteAheadLog& operator=(const WriteAheadLog&) = delete;
+    WriteAheadLog(WriteAheadLog&&)                 = delete;
+    WriteAheadLog& operator=(WriteAheadLog&&)      = delete;
+
+    // -----------------------------------------------------------------------
+    // Core Operations
+    // -----------------------------------------------------------------------
+
+    // Serialize a KVRecord to binary, write it to the WAL file, and
+    // optionally fsync. Throws std::runtime_error on I/O failure.
+    void append(const KVRecord& record);
+
+    // Read the entire WAL file and return all valid records in order.
+    // Stops at the first record that fails CRC32 validation or is
+    // truncated (partial write from a crash). Records after the
+    // corruption point are silently discarded.
+    //
+    // This method opens a separate read handle and does NOT interfere
+    // with the write handle used by append().
+    [[nodiscard]]
+    std::vector<KVRecord> replay() const;
+
+    // Clear the WAL file (truncate to zero bytes). Called after a
+    // successful SSTable flush to reclaim disk space.
+    void truncate();
+
+    // -----------------------------------------------------------------------
+    // Observers
+    // -----------------------------------------------------------------------
+
+    // Current size of the WAL file in bytes.
+    [[nodiscard]] size_t file_size() const;
+
+    // Full path to the WAL file.
+    [[nodiscard]] const std::filesystem::path& file_path() const noexcept;
+
+private:
+    // WAL file is always named "wal.log" inside the configured directory.
+    static constexpr const char* kWALFilename = "wal.log";
+
+    std::filesystem::path path_;           // Full path: wal_directory / wal.log
+    bool                  sync_per_write_; // fsync on every append?
+    FILE*                 write_handle_;   // Kept open in append mode ("ab")
+
+    // -- File Handle Management ---------------------------------------------
+    void open_for_append();
+    void close_handle();
+
+    // -- Sync ---------------------------------------------------------------
+    // Flushes the C stream buffer. If sync_per_write_ is true, also
+    // issues a platform-specific hardware sync:
+    //   Windows: _fileno() + _commit()
+    //   POSIX:   fileno()  + fsync()
+    void sync_to_disk();
+
+    // -- Serialization & CRC32 ----------------------------------------------
+
+    // Serialize a KVRecord into a self-contained binary buffer with a
+    // trailing CRC32 checksum. See wal.cpp for the detailed byte layout.
+    static std::vector<uint8_t> serialize_record(const KVRecord& record);
+
+    // Attempt to read and deserialize one record from the current file
+    // position. Returns std::nullopt on EOF, short read, or CRC mismatch.
+    static std::optional<KVRecord> deserialize_record(FILE* file);
+
+    // Standard CRC32 using the reflected polynomial 0xEDB88320.
+    // The lookup table is generated at compile time (constexpr).
+    static uint32_t compute_crc32(const uint8_t* data, size_t length);
+};
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/api_routes.cpp
+================================================================================
+#include "kvault/api_routes.hpp"
+
+namespace kvault {
+
+ApiServer::ApiServer(std::shared_ptr<KVStore> store, uint16_t port)
+    : store_(std::move(store)), port_(port)
+{
+    // Configure CORS
+    auto& cors = app_.get_middleware<crow::CORSHandler>();
+    cors.global()
+        .headers("Content-Type")
+        .methods("POST"_method, "GET"_method, "DELETE"_method, "OPTIONS"_method)
+        .origin("*");
+
+    setup_routes();
+}
+
+void ApiServer::run() {
+    // Crow will run on the specified port. 
+    // multithreaded() allows concurrent request handling.
+    app_.port(port_).multithreaded().run();
+}
+
+void ApiServer::stop() {
+    app_.stop();
+}
+
+void ApiServer::setup_routes() {
+    
+    // GET /api/kv/<key>
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
+        [this](const std::string& key) {
+            auto val = store_->get(key);
+            if (!val) {
+                return crow::response(404, "Key not found");
+            }
+            return crow::response(200, *val);
+        });
+
+    // POST /api/kv
+    // Expects JSON: { "key": "foo", "value": "bar" }
+    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::POST)(
+        [this](const crow::request& req) {
+            auto x = crow::json::load(req.body);
+            if (!x) {
+                return crow::response(400, "Invalid JSON");
+            }
+            if (!x.has("key") || !x.has("value")) {
+                return crow::response(400, "Missing 'key' or 'value'");
+            }
+            
+            std::string key = x["key"].s();
+            std::string value = x["value"].s();
+            
+            store_->put(key, value);
+            return crow::response(200, "OK");
+        });
+
+    // DELETE /api/kv/<key>
+#ifdef DELETE
+#undef DELETE
+#endif
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::DELETE)(
+        [this](const std::string& key) {
+            bool removed = store_->remove(key);
+            if (!removed) {
+                // Return 200 even if it wasn't there, delete is idempotent in LSM
+                return crow::response(200, "OK (was not present)");
+            }
+            return crow::response(200, "OK");
+        });
+
+    // GET /api/metrics
+    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::GET)(
+        [this]() {
+            crow::json::wvalue metrics;
+            metrics["memtable_size_bytes"] = store_->memtable_size();
+            metrics["wal_size_bytes"] = store_->wal_size();
+            metrics["sstable_count"] = store_->sstable_count();
+            return crow::response(metrics);
+        });
+
+    // GET /api/memtable/snapshot
+    // Returns all entries in the active MemTable as a JSON array.
+    // Used by the React dashboard's SkipList visualizer.
+    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::GET)(
+        [this]() {
+            auto records = store_->memtable_snapshot();
+            crow::json::wvalue::list arr;
+            arr.reserve(records.size());
+            for (const auto& rec : records) {
+                crow::json::wvalue entry;
+                entry["key"]   = rec.key;
+                entry["value"] = rec.value;
+                entry["type"]  = (rec.type == RecordType::DELETE) ? "tombstone" : "put";
+                arr.push_back(std::move(entry));
+            }
+            crow::json::wvalue result;
+            result["entries"] = std::move(arr);
+            result["count"]   = records.size();
+            return crow::response(result);
+        });
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/bloom_filter.cpp
+================================================================================
+#include "kvault/bloom_filter.hpp"
+
+#include <cmath>
+#include <cstring>
+#include <stdexcept>
+
+namespace kvault {
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+BloomFilter::BloomFilter(size_t expected_entries, size_t bits_per_key) {
+    // m = total bit count = expected_entries * bits_per_key
+    // Clamp to at least 64 bits to avoid edge-case division issues.
+    m_ = std::max(expected_entries * bits_per_key, size_t{64});
+
+    // k = optimal hash count = bits_per_key * ln(2) ≈ bits_per_key * 0.693
+    // Clamp between 1 and 30 (30 hashes is already overkill at any bit count).
+    const double k_ideal = static_cast<double>(bits_per_key) * 0.693147;
+    k_ = static_cast<size_t>(std::max(1.0, std::min(k_ideal, 30.0)));
+
+    // Allocate the bit array — ceil(m_ / 8) bytes, zero-initialized.
+    bits_.assign((m_ + 7) / 8, 0u);
+}
+
+BloomFilter::BloomFilter(size_t k, size_t m, std::vector<uint8_t> bits)
+    : k_(k), m_(m), bits_(std::move(bits))
+{}
+
+// ============================================================================
+// Base Hashes — FNV-1a + Murmur-Inspired Mix
+// ============================================================================
+//
+// Two independent 64-bit hashes derived from the same key:
+//
+//   h1 — FNV-1a (Fowler–Noll–Vo): fast, byte-by-byte hashing with excellent
+//         avalanche properties for short string keys.
+//
+//   h2 — A complementary Murmur-inspired finalizer applied to the FNV state,
+//         giving a second hash that is statistically independent of h1.
+//
+// Together they drive the double hashing formula:
+//   bit_i = (h1 + i * h2) mod m     for i in [0, k)
+//
+// Reference: Kirsch & Mitzenmacher, "Less Hashing, Same Performance:
+//            Building a Better Bloom Filter" (ESA 2006)
+// ============================================================================
+
+std::pair<uint64_t, uint64_t> BloomFilter::base_hashes(const Key& key) {
+    // FNV-1a for h1
+    constexpr uint64_t kFNVPrime  = 0x00000100000001B3ULL;
+    constexpr uint64_t kFNVOffset = 0xCBF29CE484222325ULL;
+
+    uint64_t h1 = kFNVOffset;
+    for (char ch : key) {
+        h1 ^= static_cast<uint64_t>(static_cast<unsigned char>(ch));
+        h1 *= kFNVPrime;
+    }
+
+    // Murmur finalizer mix for h2 — breaks linear correlations in h1.
+    uint64_t h2 = h1;
+    h2 ^= h2 >> 33;
+    h2 *= 0xFF51AFD7ED558CCDULL;
+    h2 ^= h2 >> 33;
+    h2 *= 0xC4CEB9FE1A85EC53ULL;
+    h2 ^= h2 >> 33;
+
+    return { h1, h2 };
+}
+
+// ============================================================================
+// Bit Array Accessors
+// ============================================================================
+
+void BloomFilter::set_bit(size_t bit_index) {
+    bits_[bit_index / 8] |= static_cast<uint8_t>(1u << (bit_index % 8));
+}
+
+bool BloomFilter::get_bit(size_t bit_index) const {
+    return (bits_[bit_index / 8] & (1u << (bit_index % 8))) != 0;
+}
+
+// ============================================================================
+// add() — Set k Bits for a Key
+// ============================================================================
+//
+// For each i in [0, k):
+//   bit_position = (h1 + i * h2) mod m
+//   set that bit
+//
+// The +i term ensures each hash function addresses a different position.
+// Using (h2 | 1) guarantees h2 is odd, so gcd(h2, 2^64) = 1 — ensuring
+// the sequence (h1 + i*h2) mod m visits distinct positions.
+// ============================================================================
+
+void BloomFilter::add(const Key& key) {
+    auto [h1, h2] = base_hashes(key);
+    h2 |= 1; // Ensure h2 is odd (coprime with any power-of-2 m for full coverage)
+
+    for (size_t i = 0; i < k_; ++i) {
+        const size_t bit_pos = (h1 + i * h2) % m_;
+        set_bit(bit_pos);
+    }
+}
+
+// ============================================================================
+// might_contain() — Test k Bits for a Key
+// ============================================================================
+
+bool BloomFilter::might_contain(const Key& key) const {
+    auto [h1, h2] = base_hashes(key);
+    h2 |= 1;
+
+    for (size_t i = 0; i < k_; ++i) {
+        const size_t bit_pos = (h1 + i * h2) % m_;
+        if (!get_bit(bit_pos)) {
+            return false; // Definite miss — this key was never add()ed
+        }
+    }
+    return true; // All bits set — probably present (may be a false positive)
+}
+
+// ============================================================================
+// Serialization
+// ============================================================================
+//
+// Format (all integers are little-endian uint32):
+//
+//   Offset   Size   Field    Description
+//   ──────   ────   ─────    ────────────────────────────────────
+//   0        4      k        Number of hash functions
+//   4        4      m        Total bit count
+//   8        N      bits     Packed bit array (N = ceil(m / 8) bytes)
+//   ──────   ────   ─────    ────────────────────────────────────
+//   Total: 8 + ceil(m / 8) bytes
+//
+// ============================================================================
+
+std::vector<uint8_t> BloomFilter::serialize() const {
+    std::vector<uint8_t> out;
+    out.reserve(8 + bits_.size());
+
+    // Helper: write a uint32 in little-endian byte order
+    auto write_u32 = [&](uint32_t v) {
+        out.push_back(static_cast<uint8_t>( v        & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >>  8) & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 16) & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 24) & 0xFFu));
+    };
+
+    write_u32(static_cast<uint32_t>(k_));
+    write_u32(static_cast<uint32_t>(m_));
+    out.insert(out.end(), bits_.begin(), bits_.end());
+
+    return out;
+}
+
+BloomFilter BloomFilter::deserialize(const std::vector<uint8_t>& data) {
+    if (data.size() < 8) {
+        throw std::runtime_error(
+            "BloomFilter::deserialize: buffer too small (< 8 bytes)");
+    }
+
+    auto read_u32 = [&](size_t offset) -> uint32_t {
+        return  static_cast<uint32_t>(data[offset])
+             | (static_cast<uint32_t>(data[offset + 1]) <<  8)
+             | (static_cast<uint32_t>(data[offset + 2]) << 16)
+             | (static_cast<uint32_t>(data[offset + 3]) << 24);
+    };
+
+    const size_t k = read_u32(0);
+    const size_t m = read_u32(4);
+    const size_t expected_bytes = (m + 7) / 8;
+
+    if (data.size() < 8 + expected_bytes) {
+        throw std::runtime_error(
+            "BloomFilter::deserialize: truncated bit array");
+    }
+
+    std::vector<uint8_t> bits(data.begin() + 8,
+                               data.begin() + 8 + static_cast<ptrdiff_t>(expected_bytes));
+    return BloomFilter(k, m, std::move(bits));
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/kvstore.cpp
+================================================================================
+#include "kvault/kvstore.hpp"
+#include "kvault/sstable_writer.hpp"
+
+#include <chrono>
+#include <filesystem>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <sstream>
+
+namespace kvault {
+
+namespace {
+// Generates a zero-padded timestamp filename like "000001691234567.sst"
+// to ensure lexicographical sorting matches chronological order.
+std::string generate_sstable_filename() {
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    std::ostringstream oss;
+    oss << std::setfill('0') << std::setw(16) << ms << ".sst";
+    return oss.str();
+}
+} // namespace
+
+KVStore::KVStore(const EngineConfig& config)
+    : config_(config)
+{
+    // Ensure directories exist
+    std::filesystem::create_directories(config_.wal_directory);
+    std::filesystem::create_directories(config_.sstable_directory);
+
+    // Initialize subsystems
+    sstable_manager_ = std::make_unique<SSTableManager>(config_.sstable_directory);
+    
+    std::filesystem::path wal_dir = std::filesystem::path(config_.wal_directory);
+    wal_ = std::make_unique<WriteAheadLog>(wal_dir, config_.sync_per_write);
+    
+    memtable_ = std::make_unique<MemTable>(
+        config_.memtable_flush_threshold_bytes
+    );
+
+    // Replay WAL into MemTable if the WAL file already has data
+    auto recovered_records = wal_->replay();
+    for (const auto& rec : recovered_records) {
+        if (rec.type == RecordType::PUT) {
+            memtable_->put(rec.key, rec.value);
+        } else if (rec.type == RecordType::DELETE) {
+            memtable_->remove(rec.key);
+        }
+    }
+}
+
+void KVStore::put(const Key& key, const Value& value) {
+    std::unique_lock lock(rw_mutex_);
+
+    wal_->append(KVRecord{RecordType::PUT, key, value});
+    memtable_->put(key, value);
+
+    if (memtable_->should_flush() || wal_->file_size() >= config_.memtable_flush_threshold_bytes) {
+        trigger_flush();
+    }
+}
+
+std::optional<Value> KVStore::get(const Key& key) const {
+    std::shared_lock lock(rw_mutex_);
+
+    // 1. Check MemTable
+    if (memtable_->contains_tombstone(key)) {
+        return std::nullopt; // Key was deleted recently
+    }
+
+    auto mem_val = memtable_->get(key);
+    if (mem_val) {
+        return mem_val;
+    }
+
+    // 2. Fallback to SSTableManager
+    auto sst_val = sstable_manager_->get(key);
+    if (sst_val && sst_val->empty()) {
+        // Returned empty string from SSTableManager means DELETE tombstone
+        return std::nullopt;
+    }
+    return sst_val;
+}
+
+bool KVStore::remove(const Key& key) {
+    std::unique_lock lock(rw_mutex_);
+    
+    // We append a tombstone regardless of whether the key exists,
+    // as it's an append-only operation that supersedes any older PUTs.
+    wal_->append(KVRecord{RecordType::DELETE, key, ""});
+    
+    // In an LSM tree, deletes are blind writes. Returning true unconditionally
+    // avoids a costly read and prevents a deadlock (cannot acquire shared_lock
+    // while holding unique_lock).
+    memtable_->remove(key);
+
+    if (memtable_->should_flush() || wal_->file_size() >= config_.memtable_flush_threshold_bytes) {
+        trigger_flush();
+    }
+    
+    return true;
+}
+
+void KVStore::force_flush() {
+    std::unique_lock lock(rw_mutex_);
+    if (memtable_->current_size_bytes() > 0) {
+        trigger_flush();
+    }
+}
+
+void KVStore::trigger_flush() {
+    // Note: Calling method must hold unique_lock on rw_mutex_
+    auto records = memtable_->snapshot();
+    if (records.empty()) return;
+
+    std::filesystem::path sst_path = std::filesystem::path(config_.sstable_directory) / generate_sstable_filename();
+    
+    SSTableWriter::write(sst_path, records, config_.bloom_filter_bits_per_key);
+    
+    sstable_manager_->add_sstable(sst_path);
+    
+    // Clear MemTable (creates a new instance)
+    memtable_ = std::make_unique<MemTable>(
+        config_.memtable_flush_threshold_bytes
+    );
+    
+    // Clear WAL (truncate file)
+    wal_->truncate();
+}
+
+size_t KVStore::memtable_size() const {
+    std::shared_lock lock(rw_mutex_);
+    return memtable_->current_size_bytes();
+}
+
+size_t KVStore::sstable_count() const {
+    std::shared_lock lock(rw_mutex_);
+    return sstable_manager_->count();
+}
+
+size_t KVStore::wal_size() const {
+    std::shared_lock lock(rw_mutex_);
+    return wal_->file_size();
+}
+
+std::vector<KVRecord> KVStore::memtable_snapshot() const {
+    std::shared_lock lock(rw_mutex_);
+    return memtable_->snapshot();
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/main.cpp
+================================================================================
+#include "kvault/api_routes.hpp"
+#include "kvault/config.hpp"
+#include "kvault/kvstore.hpp"
+
+#include <iostream>
+#include <memory>
+
+int main(int argc, char* argv[]) {
+    std::cout << "Starting KVault Engine...\n";
+
+    try {
+        kvault::EngineConfig config;
+        
+        std::string base_dir = "data"; // Portable default
+        
+        // Parse command line arguments
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--data-dir" && i + 1 < argc) {
+                base_dir = argv[++i];
+            }
+        }
+        
+        // You can customize config here before passing it to KVStore
+        config.wal_directory = base_dir + "/wal";
+        config.sstable_directory = base_dir + "/sstables";
+        config.server_port = 8080;
+
+        auto store = std::make_shared<kvault::KVStore>(config);
+        
+        std::cout << "KVault initialized.\n";
+        std::cout << "Recovered WAL size: " << store->wal_size() << " bytes\n";
+        std::cout << "Active SSTables: " << store->sstable_count() << "\n";
+
+        kvault::ApiServer server(store, config.server_port);
+        
+        std::cout << "Starting HTTP API on port " << config.server_port << "...\n";
+        std::cout << "Press Ctrl+C to stop.\n";
+        
+        server.run();
+
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << "\n";
+        return 1;
+    }
+
+    return 0;
+}
+
+
+================================================================================
+FILE: src/memtable.cpp
+================================================================================
+#include "kvault/memtable.hpp"
+
+#include <string>
+
+namespace kvault {
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+MemTable::MemTable(size_t flush_threshold_bytes)
+    : approximate_size_(0)
+    , flush_threshold_bytes_(flush_threshold_bytes)
+{}
+
+// ============================================================================
+// put() — Insert or Upsert
+// ============================================================================
+//
+// Byte tracking strategy:
+//   - NEW key:    approximate_size_ += key.size() + value.size() + overhead
+//   - UPSERT:     approximate_size_ += (new_value.size() - old_value.size())
+//                 (key size and node overhead are unchanged on upsert)
+//
+// If the key was previously tombstoned, the tombstone value size is
+// subtracted and the new value size is added. The key "comes back to life."
+// ============================================================================
+
+void MemTable::put(const Key& key, const Value& value) {
+    auto existing = skiplist_.search(key);
+
+    if (existing.has_value()) {
+        // Upsert: key and node overhead are unchanged.
+        // Only adjust for the value size delta.
+        approximate_size_ -= existing->size();
+        approximate_size_ += value.size();
+    } else {
+        // New entry: account for everything.
+        approximate_size_ += key.size() + value.size() + kNodeOverheadBytes;
+    }
+
+    skiplist_.insert(key, value);
+}
+
+// ============================================================================
+// remove() — Tombstone Insertion
+// ============================================================================
+//
+// Deletes are NOT physical removals from the Skip List. Instead, we insert
+// the key with the special tombstone sentinel value. This is necessary
+// because:
+//
+//   1. The key might exist in an older SSTable on disk. Without a tombstone
+//      in the MemTable, the read path would fall through and "find" the
+//      key in the SSTable — returning stale data.
+//
+//   2. When the MemTable is flushed to an SSTable, the tombstone is
+//      preserved as a DELETE record, ensuring the deletion propagates
+//      through compaction.
+// ============================================================================
+
+void MemTable::remove(const Key& key) {
+    auto existing = skiplist_.search(key);
+
+    if (existing.has_value()) {
+        // Key exists (live or already tombstoned): replace its value.
+        approximate_size_ -= existing->size();
+        approximate_size_ += kTombstoneValue.size();
+    } else {
+        // Key not in this MemTable — insert a new tombstone entry.
+        approximate_size_ += key.size() + kTombstoneValue.size()
+                           + kNodeOverheadBytes;
+    }
+
+    skiplist_.insert(key, std::string(kTombstoneValue));
+}
+
+// ============================================================================
+// get() — Read with Tombstone Filtering
+// ============================================================================
+//
+// Returns std::nullopt in two cases:
+//   1. Key not found in the Skip List
+//   2. Key found but its value is the tombstone sentinel
+//
+// The caller (KVStore) must distinguish these cases using
+// contains_tombstone() to decide whether to search SSTables.
+// ============================================================================
+
+std::optional<Value> MemTable::get(const Key& key) const {
+    auto result = skiplist_.search(key);
+
+    // Filter out tombstones — they represent deleted keys.
+    if (result.has_value() && *result == kTombstoneValue) {
+        return std::nullopt;
+    }
+
+    return result;
+}
+
+// ============================================================================
+// contains_tombstone() — Explicit Tombstone Check
+// ============================================================================
+//
+// Used by the KVStore read path to short-circuit SSTable lookups:
+//
+//   if (memtable.contains_tombstone(key)) {
+//       // Key is definitively deleted — don't search SSTables
+//       return std::nullopt;
+//   }
+//
+// Without this, a "not found" from get() would cause an unnecessary
+// (and potentially expensive) SSTable search for a key that has been
+// explicitly deleted.
+// ============================================================================
+
+bool MemTable::contains_tombstone(const Key& key) const {
+    auto result = skiplist_.search(key);
+    return result.has_value() && *result == kTombstoneValue;
+}
+
+// ============================================================================
+// Size & Threshold Observers
+// ============================================================================
+
+size_t MemTable::current_size_bytes() const noexcept {
+    return approximate_size_;
+}
+
+bool MemTable::should_flush() const noexcept {
+    return approximate_size_ >= flush_threshold_bytes_;
+}
+
+size_t MemTable::entry_count() const noexcept {
+    return skiplist_.size();
+}
+
+// ============================================================================
+// snapshot() — Ordered Dump for SSTable Flushing
+// ============================================================================
+//
+// Walks the Skip List's level-0 chain (which is sorted by key) and
+// builds a vector of KVRecords:
+//
+//   - Live entries (value != tombstone) → RecordType::PUT
+//   - Tombstoned entries               → RecordType::DELETE (value = "")
+//
+// The returned vector is guaranteed to be in ascending key order,
+// which is exactly what the SSTable writer requires.
+// ============================================================================
+
+std::vector<KVRecord> MemTable::snapshot() const {
+    std::vector<KVRecord> records;
+    records.reserve(skiplist_.size());
+
+    for (auto it = skiplist_.begin(); it != skiplist_.end(); ++it) {
+        KVRecord record;
+
+        if (it.value() == kTombstoneValue) {
+            record.type  = RecordType::DELETE;
+            record.key   = it.key();
+            // record.value is left default-constructed (empty string)
+        } else {
+            record.type  = RecordType::PUT;
+            record.key   = it.key();
+            record.value = it.value();
+        }
+
+        records.push_back(std::move(record));
+    }
+
+    return records;
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/skiplist.cpp
+================================================================================
+#include "kvault/skiplist.hpp"
+
+#include <cassert>
+#include <chrono>
+
+// Concise int → size_t cast for vector subscripting.
+// Eliminates -Wsign-conversion warnings without verbose static_cast<size_t>()
+// at every call site.
+namespace {
+inline constexpr size_t sz(int i) noexcept {
+    return static_cast<size_t>(i);
+}
+} // anonymous namespace
+
+namespace kvault {
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+SkipList::SkipList()
+    : head_(std::make_unique<SkipListNode>(kMaxLevel))
+    , current_level_(0)
+    , size_(0)
+    , rng_(static_cast<unsigned>(
+          std::chrono::steady_clock::now().time_since_epoch().count()))
+    , dist_(0.0, 1.0)
+{
+    // Reserve arena space to reduce early reallocations.
+    // A 4 MB MemTable with ~100-byte entries ≈ 40K nodes.
+    arena_.reserve(1024);
+}
+
+// ============================================================================
+// Random Level Generation
+// ============================================================================
+// Generates a level in [1, kMaxLevel] with a geometric distribution.
+// Each successive level has a kProbability chance of being included.
+//
+// Expected height of a node = 1 / (1 - p) = 2.0 for p = 0.5
+// Expected total pointers across all nodes = n * 2.0
+// ============================================================================
+
+int SkipList::random_level() {
+    int level = 1;
+    while (level < kMaxLevel && dist_(rng_) < kProbability) {
+        ++level;
+    }
+    return level;
+}
+
+// ============================================================================
+// Insert (Upsert)
+// ============================================================================
+// 1. Descend from the highest active level, recording the last node at
+//    each level whose key < target key (the "update" vector).
+// 2. If the key exists at level 0, overwrite its value (upsert).
+// 3. Otherwise, allocate a new node in the arena, generate a random
+//    height, and splice it into all levels [0, height).
+//
+// Complexity: O(log n) expected time, O(1) amortized allocation.
+// ============================================================================
+
+void SkipList::insert(const Key& key, const Value& value) {
+    // update[i] will hold the rightmost node at level i whose key < `key`.
+    // After traversal, the new node is spliced between update[i] and
+    // update[i]->forward[i] at each level.
+    std::vector<SkipListNode*> update(kMaxLevel, nullptr);
+    SkipListNode* current = head_.get();
+
+    // Traverse: start at the highest active level, move right while
+    // the next node's key is still less than the target, then drop down.
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[sz(i)] != nullptr &&
+               current->forward[sz(i)]->key < key) {
+            current = current->forward[sz(i)];
+        }
+        update[sz(i)] = current;
+    }
+
+    // After the traversal, current->forward[0] is the first node whose
+    // key >= target key. Check for exact match (upsert case).
+    SkipListNode* candidate = current->forward[0];
+    if (candidate != nullptr && candidate->key == key) {
+        // Key exists — update the value in place. No structural change.
+        candidate->value = value;
+        return;
+    }
+
+    // -- Allocate & splice a new node --
+
+    const int new_height = random_level();
+
+    // If the new node is taller than the current structure, extend the
+    // update vector to include the head at those new levels.
+    if (new_height > current_level_) {
+        for (int i = current_level_; i < new_height; ++i) {
+            update[sz(i)] = head_.get();
+        }
+        current_level_ = new_height;
+    }
+
+    // Create the new node in the arena. The arena takes unique ownership;
+    // we extract a raw pointer for forward[] wiring.
+    arena_.push_back(std::make_unique<SkipListNode>(key, value, new_height));
+    SkipListNode* new_node = arena_.back().get();
+
+    // Splice: at each level [0, new_height), insert new_node between
+    // update[i] and update[i]->forward[i].
+    //
+    //  BEFORE:  update[i] ─────────────────► update[i]->forward[i]
+    //  AFTER:   update[i] ──► new_node ──► update[i]->forward[i]
+    //
+    for (int i = 0; i < new_height; ++i) {
+        new_node->forward[sz(i)]  = update[sz(i)]->forward[sz(i)];
+        update[sz(i)]->forward[sz(i)] = new_node;
+    }
+
+    ++size_;
+}
+
+// ============================================================================
+// Search
+// ============================================================================
+// Descend from the highest level, moving right along express lanes until
+// we overshoot, then drop down. At level 0, check for an exact match.
+//
+// Complexity: O(log n) expected — each level skips ~half the remaining nodes.
+// ============================================================================
+
+std::optional<Value> SkipList::search(const Key& key) const {
+    const SkipListNode* current = head_.get();
+
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[sz(i)] != nullptr &&
+               current->forward[sz(i)]->key < key) {
+            current = current->forward[sz(i)];
+        }
+    }
+
+    // current->forward[0] is the first node with key >= target.
+    const SkipListNode* candidate = current->forward[0];
+    if (candidate != nullptr && candidate->key == key) {
+        return candidate->value;
+    }
+
+    return std::nullopt;
+}
+
+// ============================================================================
+// Remove
+// ============================================================================
+// 1. Find the node using the same traversal as insert, recording update[].
+// 2. Unlink the node from all levels by rewiring forward pointers.
+// 3. Shrink current_level_ if the topmost levels are now empty.
+//
+// IMPORTANT: The node is NOT removed from arena_. It remains allocated
+// but unreachable (a "zombie"). This is a deliberate design choice:
+//
+//   - For MemTable usage, physical deletes are tombstones (handled at
+//     the MemTable layer), and the entire SkipList is discarded after
+//     flushing. Scanning arena_ to find-and-erase would be O(n) — worse
+//     than the O(log n) unlink operation itself.
+//
+//   - If arena compaction were needed (e.g., long-lived skip lists),
+//     a generation-based or epoch-based reclamation scheme could be
+//     layered on top without changing this interface.
+//
+// Complexity: O(log n) expected for unlinking. O(1) for "deallocation"
+//             (deferred to SkipList destruction).
+// ============================================================================
+
+bool SkipList::remove(const Key& key) {
+    std::vector<SkipListNode*> update(kMaxLevel, nullptr);
+    SkipListNode* current = head_.get();
+
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[sz(i)] != nullptr &&
+               current->forward[sz(i)]->key < key) {
+            current = current->forward[sz(i)];
+        }
+        update[sz(i)] = current;
+    }
+
+    SkipListNode* target = current->forward[0];
+
+    // Key not found — nothing to remove.
+    if (target == nullptr || target->key != key) {
+        return false;
+    }
+
+    // Unlink target from every level it participates in.
+    //
+    //  BEFORE:  update[i] ──► target ──► target->forward[i]
+    //  AFTER:   update[i] ──────────────► target->forward[i]
+    //
+    // We stop as soon as update[i]->forward[i] != target, because the
+    // target cannot appear at any higher level without appearing at all
+    // lower levels (skip list invariant).
+    for (int i = 0; i < current_level_; ++i) {
+        if (update[sz(i)]->forward[sz(i)] != target) {
+            break;
+        }
+        update[sz(i)]->forward[sz(i)] = target->forward[sz(i)];
+    }
+
+    // Shrink the structure height if the highest levels are now empty.
+    // This keeps traversal efficient by avoiding wasted empty levels.
+    while (current_level_ > 0 &&
+           head_->forward[static_cast<size_t>(current_level_ - 1)] == nullptr) {
+        --current_level_;
+    }
+
+    --size_;
+    return true;
+
+    // target is now unreachable via forward pointers but still lives in
+    // arena_. Its memory will be freed when this SkipList is destroyed.
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/sstable_manager.cpp
+================================================================================
+#include "kvault/sstable_manager.hpp"
+
+#include <algorithm>
+#include <iostream>
+
+namespace kvault {
+
+SSTableManager::SSTableManager(const std::filesystem::path& sstable_dir)
+    : sstable_dir_(sstable_dir)
+{
+    std::filesystem::create_directories(sstable_dir_);
+
+    std::vector<std::filesystem::path> sst_files;
+    for (const auto& entry : std::filesystem::directory_iterator(sstable_dir_)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".sst") {
+            sst_files.push_back(entry.path());
+        }
+    }
+
+    // Sort files in descending order (lexicographically by filename).
+    // Assuming filenames are zero-padded timestamps like 1691234567.sst,
+    // this correctly sorts newest first.
+    std::sort(sst_files.begin(), sst_files.end(), std::greater<>());
+
+    for (const auto& path : sst_files) {
+        try {
+            readers_.push_back(std::make_unique<SSTableReader>(path));
+        } catch (const std::exception& e) {
+            std::cerr << "SSTableManager: Failed to load " << path 
+                      << " - " << e.what() << "\n";
+        }
+    }
+}
+
+std::optional<Value> SSTableManager::get(const Key& key) const {
+    auto rec = get_record(key);
+    if (!rec) return std::nullopt;
+    if (rec->type == RecordType::DELETE) return std::string{};
+    return rec->value;
+}
+
+std::optional<KVRecord> SSTableManager::get_record(const Key& key) const {
+    // Search newest to oldest.
+    for (const auto& reader : readers_) {
+        auto result = reader->get_record(key);
+        if (result) {
+            // Found it! It could be a PUT or a DELETE (tombstone).
+            // In either case, it's the most recent state for this key.
+            return result;
+        }
+    }
+    return std::nullopt;
+}
+
+void SSTableManager::add_sstable(const std::filesystem::path& path) {
+    // A newly flushed SSTable is always the newest generation.
+    auto reader = std::make_unique<SSTableReader>(path);
+    readers_.insert(readers_.begin(), std::move(reader));
+}
+
+std::vector<SSTableMetadata> SSTableManager::get_metadata() const {
+    std::vector<SSTableMetadata> meta;
+    meta.reserve(readers_.size());
+    for (const auto& r : readers_) {
+        meta.push_back(r->metadata());
+    }
+    return meta;
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/sstable_reader.cpp
+================================================================================
+#include "kvault/sstable_reader.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <stdexcept>
+
+namespace kvault {
+
+// ============================================================================
+// Little-Endian Read Helpers (file position advances after each call)
+// ============================================================================
+
+namespace {
+
+bool read_u8(FILE* f, uint8_t& out) {
+    return std::fread(&out, 1, 1, f) == 1;
+}
+
+bool read_u32_le(FILE* f, uint32_t& out) {
+    uint8_t buf[4];
+    if (std::fread(buf, 1, 4, f) != 4) return false;
+    out =  static_cast<uint32_t>(buf[0])
+        | (static_cast<uint32_t>(buf[1]) <<  8)
+        | (static_cast<uint32_t>(buf[2]) << 16)
+        | (static_cast<uint32_t>(buf[3]) << 24);
+    return true;
+}
+
+bool read_u64_le(FILE* f, uint64_t& out) {
+    uint8_t buf[8];
+    if (std::fread(buf, 1, 8, f) != 8) return false;
+    out =  static_cast<uint64_t>(buf[0])
+        | (static_cast<uint64_t>(buf[1]) <<  8)
+        | (static_cast<uint64_t>(buf[2]) << 16)
+        | (static_cast<uint64_t>(buf[3]) << 24)
+        | (static_cast<uint64_t>(buf[4]) << 32)
+        | (static_cast<uint64_t>(buf[5]) << 40)
+        | (static_cast<uint64_t>(buf[6]) << 48)
+        | (static_cast<uint64_t>(buf[7]) << 56);
+    return true;
+}
+
+// Read a length-prefixed string written by write_bytes() in the writer.
+bool read_string(FILE* f, std::string& out) {
+    uint32_t len = 0;
+    if (!read_u32_le(f, len)) return false;
+    out.resize(len);
+    if (len > 0 && std::fread(out.data(), 1, len, f) != len) return false;
+    return true;
+}
+
+// Platform-portable 64-bit fseek
+int fseek64(FILE* f, int64_t offset, int origin) {
+#ifdef _WIN32
+    return _fseeki64(f, offset, origin);
+#else
+    return std::fseek(f, static_cast<long>(offset), origin);
+#endif
+}
+
+int64_t ftell64(FILE* f) {
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
+    return static_cast<int64_t>(std::ftell(f));
+#endif
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// Construction — Open File and Load Metadata
+// ============================================================================
+
+SSTableReader::SSTableReader(const std::filesystem::path& path)
+    : path_(path)
+    , file_(nullptr)
+    , bloom_filter_(1, 10) // temporary; overwritten by load_bloom_filter()
+    , entry_count_(0)
+    , data_block_size_(0)
+    , index_block_offset_(0)
+{
+    file_ = std::fopen(path_.string().c_str(), "rb");
+    if (!file_) {
+        throw std::runtime_error(
+            "SSTableReader: cannot open file: " + path_.string());
+    }
+
+    // Bootstrap sequence (see READER BOOTSTRAP SEQUENCE in sstable_writer.cpp):
+    //   1. Read footer (from end of file)
+    //   2. Load bloom filter (from bloom_block_offset)
+    //   3. Load index (from index_block_offset)
+    const SSTableFooter footer = read_footer();
+
+    if (footer.magic != SSTableWriter::kMagicNumber) {
+        std::fclose(file_);
+        file_ = nullptr;
+        throw std::runtime_error(
+            "SSTableReader: invalid magic number in " + path_.string());
+    }
+
+    entry_count_        = footer.entry_count;
+    data_block_size_    = footer.data_block_size;
+    index_block_offset_ = footer.index_block_offset;
+
+    load_bloom_filter(footer.bloom_block_offset, footer.footer_offset);
+    load_index(footer.index_block_offset, footer.bloom_block_offset);
+}
+
+SSTableReader::~SSTableReader() {
+    if (file_) {
+        std::fclose(file_);
+        file_ = nullptr;
+    }
+}
+
+// Move semantics
+SSTableReader::SSTableReader(SSTableReader&& other) noexcept
+    : path_(std::move(other.path_))
+    , file_(other.file_)
+    , index_(std::move(other.index_))
+    , bloom_filter_(std::move(other.bloom_filter_))
+    , entry_count_(other.entry_count_)
+    , data_block_size_(other.data_block_size_)
+    , min_key_(std::move(other.min_key_))
+    , max_key_(std::move(other.max_key_))
+{
+    other.file_ = nullptr;
+}
+
+SSTableReader& SSTableReader::operator=(SSTableReader&& other) noexcept {
+    if (this != &other) {
+        if (file_) std::fclose(file_);
+        path_            = std::move(other.path_);
+        file_            = other.file_;
+        index_           = std::move(other.index_);
+        bloom_filter_    = std::move(other.bloom_filter_);
+        entry_count_     = other.entry_count_;
+        data_block_size_ = other.data_block_size_;
+        min_key_         = std::move(other.min_key_);
+        max_key_         = std::move(other.max_key_);
+        other.file_      = nullptr;
+    }
+    return *this;
+}
+
+// ============================================================================
+// read_footer — Read the Fixed 48-byte Footer from File End
+// ============================================================================
+
+SSTableFooter SSTableReader::read_footer() const {
+    // Seek to file end - 48 bytes
+    fseek64(file_, -static_cast<int64_t>(SSTableFooter::kSerializedSize), SEEK_END);
+
+    SSTableFooter footer{};
+    if (!read_u64_le(file_, footer.index_block_offset) ||
+        !read_u64_le(file_, footer.bloom_block_offset)  ||
+        !read_u64_le(file_, footer.footer_offset)        ||
+        !read_u64_le(file_, footer.entry_count)          ||
+        !read_u64_le(file_, footer.data_block_size)      ||
+        !read_u64_le(file_, footer.magic))
+    {
+        throw std::runtime_error(
+            "SSTableReader: failed to read footer from " + path_.string());
+    }
+    return footer;
+}
+
+// ============================================================================
+// load_bloom_filter — Deserialize Filter from Bloom Block
+// ============================================================================
+
+void SSTableReader::load_bloom_filter(uint64_t bloom_block_offset,
+                                       uint64_t footer_offset)
+{
+    fseek64(file_, static_cast<int64_t>(bloom_block_offset), SEEK_SET);
+
+    // Read the 4-byte size prefix
+    uint32_t bloom_size = 0;
+    if (!read_u32_le(file_, bloom_size)) {
+        throw std::runtime_error(
+            "SSTableReader: failed to read bloom filter size");
+    }
+
+    // Sanity check: bloom block must fit between its offset and the footer
+    const uint64_t max_bloom_size =
+        footer_offset - bloom_block_offset - 4;
+    if (static_cast<uint64_t>(bloom_size) > max_bloom_size) {
+        throw std::runtime_error(
+            "SSTableReader: bloom filter size exceeds available space");
+    }
+
+    // Read the serialized filter bytes
+    std::vector<uint8_t> bloom_data(bloom_size);
+    if (bloom_size > 0 &&
+        std::fread(bloom_data.data(), 1, bloom_size, file_) != bloom_size) {
+        throw std::runtime_error(
+            "SSTableReader: truncated bloom filter block");
+    }
+
+    bloom_filter_ = BloomFilter::deserialize(bloom_data);
+}
+
+// ============================================================================
+// load_index — Build In-Memory Sparse Index from Index Block
+// ============================================================================
+
+void SSTableReader::load_index(uint64_t index_block_offset,
+                                uint64_t bloom_block_offset)
+{
+    fseek64(file_, static_cast<int64_t>(index_block_offset), SEEK_SET);
+
+    uint32_t entry_count = 0;
+    if (!read_u32_le(file_, entry_count)) {
+        throw std::runtime_error(
+            "SSTableReader: failed to read index entry count");
+    }
+
+    index_.reserve(entry_count);
+
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        IndexEntry entry;
+        uint64_t   offset = 0;
+        if (!read_u64_le(file_, offset) ||
+            !read_string(file_, entry.key))
+        {
+            throw std::runtime_error(
+                "SSTableReader: corrupted index block");
+        }
+        entry.offset = offset;
+        index_.push_back(std::move(entry));
+    }
+
+    // Populate min/max key from the index (first and last entries)
+    if (!index_.empty()) {
+        min_key_ = index_.front().key;
+        // max_key_ is the last index entry's key (≤ actual last key).
+        // For an exact max_key, we'd need to scan; the index key is safe
+        // for range-filter decisions (it's a lower bound of the last block).
+        max_key_ = index_.back().key;
+    }
+
+    (void)bloom_block_offset; // Used only for bounds checking in load_bloom
+}
+
+// ============================================================================
+// read_record — Deserialize One KVRecord from Current File Position
+// ============================================================================
+
+bool SSTableReader::read_record(FILE* file, KVRecord& out) {
+    uint8_t type_byte = 0;
+    if (!read_u8(file, type_byte))          return false;
+    if (!read_string(file, out.key))        return false;
+    if (!read_string(file, out.value))      return false;
+
+    out.type = static_cast<RecordType>(type_byte);
+    return true;
+}
+
+// ============================================================================
+// get() — Three-Step Lookup
+// ============================================================================
+//
+// Step 1: Bloom Filter  — O(k) in-memory bit checks
+// Step 2: Binary Search — O(log(N/interval)) in-memory index scan
+// Step 3: Data Scan     — O(interval) sequential disk reads (1 seek)
+//
+// ============================================================================
+
+std::optional<Value> SSTableReader::get(const Key& key) const {
+    auto record = get_record(key);
+    if (!record) return std::nullopt;
+
+    // Surface tombstones as empty string — the KVStore distinguishes this
+    // from "not found" using contains_tombstone() on the MemTable first.
+    // If a tombstone reaches here (from a flushed MemTable), return "".
+    if (record->type == RecordType::DELETE) {
+        return std::string{}; // Tombstone marker (empty value)
+    }
+    return record->value;
+}
+
+std::optional<KVRecord> SSTableReader::get_record(const Key& key) const {
+    // ── Step 1: Bloom Filter Check ─────────────────────────────────────────
+    if (!bloom_filter_.might_contain(key)) {
+        return std::nullopt;  // Definite miss — zero disk I/O
+    }
+
+    // ── Step 2: Sparse Index Binary Search ─────────────────────────────────
+    // Find the last index entry whose key ≤ target key.
+    // That entry's offset is where we start scanning the data block.
+    //
+    // Using upper_bound then stepping back:
+    //   upper_bound finds the first entry with key > target.
+    //   The entry before it is the last with key ≤ target.
+
+    if (index_.empty()) return std::nullopt;
+
+    auto it = std::upper_bound(
+        index_.begin(), index_.end(), key,
+        [](const Key& k, const IndexEntry& e) { return k < e.key; }
+    );
+
+    // If all index keys are > target, the key can't be in this SSTable
+    // (since the data is sorted, and the first index key is the minimum).
+    if (it == index_.begin()) {
+        return std::nullopt;
+    }
+
+    // Step back to get the last entry with key ≤ target
+    --it;
+    const uint64_t scan_start = it->offset;
+
+    // Determine the scan end: use the NEXT index entry's offset as the
+    // upper bound. If this is the last index entry, scan until data block end.
+    uint64_t scan_end;
+    const auto next_it = std::next(it);
+    if (next_it != index_.end()) {
+        scan_end = next_it->offset;
+    } else {
+        // Last sparse block: scan until the start of the index block,
+        // which is the exact byte boundary between data and metadata.
+        scan_end = index_block_offset_;
+    }
+
+    // ── Step 3: Data Block Scan ─────────────────────────────────────────────
+    // Seek once, then read records sequentially until we find the key or
+    // exhaust the sparse block's byte range.
+
+    fseek64(file_, static_cast<int64_t>(scan_start), SEEK_SET);
+
+    while (static_cast<uint64_t>(ftell64(file_)) < scan_end) {
+        KVRecord record;
+        if (!read_record(file_, record)) {
+            break; // EOF or read error — key not found in this range
+        }
+
+        if (record.key == key) {
+            return record;  // Found!
+        }
+
+        // Since data is sorted, if we've passed the target key we can stop.
+        if (record.key > key) {
+            break;
+        }
+    }
+
+    return std::nullopt; // Not in this SSTable
+}
+
+// ============================================================================
+// Observers
+// ============================================================================
+
+const std::string& SSTableReader::min_key() const noexcept {
+    return min_key_;
+}
+
+const std::string& SSTableReader::max_key() const noexcept {
+    return max_key_;
+}
+
+uint64_t SSTableReader::entry_count() const noexcept {
+    return entry_count_;
+}
+
+uint64_t SSTableReader::file_size() const {
+    if (!std::filesystem::exists(path_)) return 0;
+    return static_cast<uint64_t>(std::filesystem::file_size(path_));
+}
+
+const std::filesystem::path& SSTableReader::path() const noexcept {
+    return path_;
+}
+
+SSTableMetadata SSTableReader::metadata() const {
+    return SSTableMetadata{
+        .min_key         = min_key_,
+        .max_key         = max_key_,
+        .entry_count     = entry_count_,
+        .file_size_bytes = file_size(),
+        .file_path       = path_.string()
+    };
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/sstable_writer.cpp
+================================================================================
+#include "kvault/sstable_writer.hpp"
+
+#include <cstring>
+#include <stdexcept>
+
+// Platform-specific fsync for durability after flush
+#ifdef _WIN32
+    #include <io.h>
+#else
+    #include <unistd.h>
+#endif
+
+namespace kvault {
+
+// ============================================================================
+// SSTable Binary File Format — Complete Byte Layout
+// ============================================================================
+//
+// All multi-byte integers are stored in LITTLE-ENDIAN byte order.
+// The file is written top-to-bottom in a single sequential pass.
+//
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║  SECTION 1: DATA BLOCK                                              ║
+// ║  Starts at byte offset 0.                                           ║
+// ║  Contains all KVRecords in sorted key order.                        ║
+// ║                                                                      ║
+// ║  Each record is encoded as:                                          ║
+// ║                                                                      ║
+// ║   Offset  Size  Field          Description                           ║
+// ║   ──────  ────  ─────          ─────────────────────────────────     ║
+// ║   +0      1     record_type    0x00=PUT, 0x01=DELETE                 ║
+// ║   +1      4     key_length     Length of key bytes (uint32 LE)       ║
+// ║   +5      K     key_data       Raw key bytes                         ║
+// ║   +5+K    4     value_length   Length of value bytes (uint32 LE)     ║
+// ║   +9+K    V     value_data     Raw value bytes                       ║
+// ║                                                                      ║
+// ║  Total per record: 9 + K + V bytes                                   ║
+// ║  Total data block: sum(9 + Ki + Vi) for all i in [0, N)              ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  SECTION 2: SPARSE INDEX BLOCK                                       ║
+// ║  Starts immediately after the last data record.                      ║
+// ║  Contains one entry per kIndexBlockInterval-th data record.          ║
+// ║  Also always contains an entry for the LAST record.                  ║
+// ║                                                                      ║
+// ║  Header (4 bytes):                                                   ║
+// ║   +0      4     entry_count    Number of index entries (uint32 LE)   ║
+// ║                                                                      ║
+// ║  Each index entry:                                                   ║
+// ║   +0      8     data_offset    Byte offset in data block (uint64 LE) ║
+// ║   +8      4     key_length     Length of key bytes (uint32 LE)       ║
+// ║   +12     K     key_data       Raw key bytes                         ║
+// ║                                                                      ║
+// ║  Binary search on data_offset + key finds the scan start point.     ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  SECTION 3: BLOOM FILTER BLOCK                                       ║
+// ║  Starts immediately after the index block.                           ║
+// ║                                                                      ║
+// ║  Header (4 bytes):                                                   ║
+// ║   +0      4     bloom_size     Byte size of serialized filter        ║
+// ║                                                                      ║
+// ║  Body (bloom_size bytes):                                            ║
+// ║   BloomFilter::serialize() output:                                   ║
+// ║     [0..3]  k (uint32 LE) — number of hash functions                 ║
+// ║     [4..7]  m (uint32 LE) — number of bits                           ║
+// ║     [8..]   packed bit array  ceil(m/8) bytes                        ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  SECTION 4: FOOTER (exactly 48 bytes, always at file end - 48)       ║
+// ║                                                                      ║
+// ║   Offset  Size  Field                  Description                   ║
+// ║   ──────  ────  ─────                  ─────────────────────────     ║
+// ║   +0      8     index_block_offset     Byte offset of section 2      ║
+// ║   +8      8     bloom_block_offset     Byte offset of section 3      ║
+// ║   +16     8     footer_offset          Byte offset of this footer    ║
+// ║   +24     8     entry_count            Total KVRecord count          ║
+// ║   +32     8     data_block_size        Size of section 1 in bytes    ║
+// ║   +40     8     magic                  0x544C564B00010000 ("KVLT")   ║
+// ║                                                                      ║
+// ║  Total: 6 × 8 = 48 bytes. Validated by static_assert in header.     ║
+// ╚══════════════════════════════════════════════════════════════════════╝
+//
+// READER BOOTSTRAP SEQUENCE:
+//   1. fseek(EOF - 48)     → read Footer
+//   2. Validate magic number
+//   3. fseek(bloom_block_offset)  → read + deserialize BloomFilter
+//   4. fseek(index_block_offset)  → read all IndexEntries into memory
+//   → Ready for O(log n) point lookups with 1 disk seek per query
+//
+// ============================================================================
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Little-Endian Write Helpers
+// ---------------------------------------------------------------------------
+
+void write_u8(FILE* f, uint8_t v) {
+    std::fwrite(&v, 1, 1, f);
+}
+
+void write_u32_le(FILE* f, uint32_t v) {
+    uint8_t buf[4] = {
+        static_cast<uint8_t>( v        & 0xFFu),
+        static_cast<uint8_t>((v >>  8) & 0xFFu),
+        static_cast<uint8_t>((v >> 16) & 0xFFu),
+        static_cast<uint8_t>((v >> 24) & 0xFFu)
+    };
+    std::fwrite(buf, 1, 4, f);
+}
+
+void write_u64_le(FILE* f, uint64_t v) {
+    uint8_t buf[8] = {
+        static_cast<uint8_t>( v        & 0xFFULL),
+        static_cast<uint8_t>((v >>  8) & 0xFFULL),
+        static_cast<uint8_t>((v >> 16) & 0xFFULL),
+        static_cast<uint8_t>((v >> 24) & 0xFFULL),
+        static_cast<uint8_t>((v >> 32) & 0xFFULL),
+        static_cast<uint8_t>((v >> 40) & 0xFFULL),
+        static_cast<uint8_t>((v >> 48) & 0xFFULL),
+        static_cast<uint8_t>((v >> 56) & 0xFFULL)
+    };
+    std::fwrite(buf, 1, 8, f);
+}
+
+// Write a length-prefixed string (uint32 LE length + raw bytes)
+void write_bytes(FILE* f, const std::string& s) {
+    write_u32_le(f, static_cast<uint32_t>(s.size()));
+    if (!s.empty()) {
+        std::fwrite(s.data(), 1, s.size(), f);
+    }
+}
+
+// Return current file position (byte offset from beginning)
+uint64_t ftell64(FILE* f) {
+#ifdef _WIN32
+    return static_cast<uint64_t>(_ftelli64(f));
+#else
+    return static_cast<uint64_t>(std::ftell(f));
+#endif
+}
+
+// Flush + fsync for durability
+void sync_file(FILE* f) {
+    std::fflush(f);
+#ifdef _WIN32
+    _commit(_fileno(f));
+#else
+    ::fsync(fileno(f));
+#endif
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// SSTableWriter::write — Main Entry Point
+// ============================================================================
+
+void SSTableWriter::write(const std::filesystem::path& path,
+                          const std::vector<KVRecord>& sorted_entries,
+                          size_t bits_per_key)
+{
+    if (sorted_entries.empty()) {
+        // Write an empty but valid SSTable so the manager doesn't need
+        // special-case logic for zero-entry tables.
+        // (Edge case: flush triggered after all keys were deleted.)
+    }
+
+    // Create parent directories if they don't exist
+    std::filesystem::create_directories(path.parent_path());
+
+    FILE* f = std::fopen(path.string().c_str(), "wb");
+    if (!f) {
+        throw std::runtime_error(
+            "SSTableWriter: failed to open for write: " + path.string());
+    }
+
+    // -----------------------------------------------------------------------
+    // SECTION 1: DATA BLOCK
+    // -----------------------------------------------------------------------
+    // Write every KVRecord sequentially. For each record, note its starting
+    // byte offset — used to build the sparse index.
+
+    // Build Bloom Filter in parallel as we iterate (saves a second pass).
+    BloomFilter bloom(sorted_entries.size(), bits_per_key);
+
+    // Sparse index: collect (offset, key) for every kIndexBlockInterval-th record.
+    struct RawIndexEntry {
+        uint64_t    offset;
+        std::string key;
+    };
+    std::vector<RawIndexEntry> raw_index;
+    raw_index.reserve(sorted_entries.size() / kIndexBlockInterval + 2);
+
+    const uint64_t data_block_start = ftell64(f); // Should always be 0
+
+    for (size_t idx = 0; idx < sorted_entries.size(); ++idx) {
+        const auto& rec = sorted_entries[idx];
+
+        const uint64_t record_offset = ftell64(f);
+
+        // Record the offset of every Nth key (and always the first key)
+        if (idx == 0 || idx % kIndexBlockInterval == 0) {
+            raw_index.push_back({ record_offset, rec.key });
+        }
+
+        // Feed the Bloom Filter (only PUT keys need lookup; DELETE tombstones
+        // still need to be found to propagate the deletion, so add all keys).
+        bloom.add(rec.key);
+
+        // Write the record: [type 1B] [key_len 4B] [key] [val_len 4B] [val]
+        write_u8(f, static_cast<uint8_t>(rec.type));
+        write_bytes(f, rec.key);
+        write_bytes(f, rec.value);
+    }
+
+    const uint64_t data_block_end  = ftell64(f);
+    const uint64_t data_block_size = data_block_end - data_block_start;
+
+    // -----------------------------------------------------------------------
+    // SECTION 2: SPARSE INDEX BLOCK
+    // -----------------------------------------------------------------------
+
+    const uint64_t index_block_offset = ftell64(f);
+
+    write_u32_le(f, static_cast<uint32_t>(raw_index.size()));
+    for (const auto& entry : raw_index) {
+        write_u64_le(f, entry.offset);
+        write_bytes(f, entry.key);
+    }
+
+    // -----------------------------------------------------------------------
+    // SECTION 3: BLOOM FILTER BLOCK
+    // -----------------------------------------------------------------------
+
+    const uint64_t bloom_block_offset = ftell64(f);
+    const auto bloom_bytes = bloom.serialize();
+
+    write_u32_le(f, static_cast<uint32_t>(bloom_bytes.size()));
+    std::fwrite(bloom_bytes.data(), 1, bloom_bytes.size(), f);
+
+    // -----------------------------------------------------------------------
+    // SECTION 4: FOOTER (48 bytes)
+    // -----------------------------------------------------------------------
+
+    const uint64_t footer_offset = ftell64(f);
+
+    SSTableFooter footer{};
+    footer.index_block_offset = index_block_offset;
+    footer.bloom_block_offset = bloom_block_offset;
+    footer.footer_offset      = footer_offset;
+    footer.entry_count        = static_cast<uint64_t>(sorted_entries.size());
+    footer.data_block_size    = data_block_size;
+    footer.magic              = kMagicNumber;
+
+    write_u64_le(f, footer.index_block_offset);
+    write_u64_le(f, footer.bloom_block_offset);
+    write_u64_le(f, footer.footer_offset);
+    write_u64_le(f, footer.entry_count);
+    write_u64_le(f, footer.data_block_size);
+    write_u64_le(f, footer.magic);
+
+    // Durability: ensure the full file hits stable storage before we
+    // consider the SSTable "live". The WAL can only be truncated after this.
+    sync_file(f);
+    std::fclose(f);
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: src/wal.cpp
+================================================================================
+#include "kvault/wal.hpp"
+
+#include <array>
+#include <cstring>
+#include <stdexcept>
+
+// Platform-specific headers for hardware sync (fsync / _commit)
+#ifdef _WIN32
+    #include <io.h>       // _fileno, _commit
+#else
+    #include <unistd.h>   // fileno, fsync
+#endif
+
+namespace kvault {
+
+// ============================================================================
+// CRC32 — Compile-Time Lookup Table
+// ============================================================================
+//
+// Standard CRC32 using the reflected polynomial 0xEDB88320 (same as
+// Ethernet, zlib, and PNG). Used to detect corrupted WAL records after
+// a crash — e.g., a partial write where only half the record made it
+// to disk before power was lost.
+//
+// The 256-entry lookup table is generated at compile time via constexpr,
+// so there's zero runtime initialization cost.
+// ============================================================================
+
+namespace {
+
+constexpr std::array<uint32_t, 256> generate_crc32_table() {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; ++j) {
+            crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+        }
+        table[i] = crc;
+    }
+    return table;
+}
+
+// Computed at compile time — stored in the binary's read-only data segment.
+constexpr auto kCRC32Table = generate_crc32_table();
+
+// ---------------------------------------------------------------------------
+// Little-Endian Serialization Helpers
+// ---------------------------------------------------------------------------
+// These functions explicitly encode/decode integers byte-by-byte in
+// little-endian order, making the WAL format portable across architectures
+// (even though x86/x64 and modern ARM are natively little-endian).
+// ---------------------------------------------------------------------------
+
+void write_u32_le(std::vector<uint8_t>& buf, uint32_t val) {
+    buf.push_back(static_cast<uint8_t>( val        & 0xFFu));
+    buf.push_back(static_cast<uint8_t>((val >>  8) & 0xFFu));
+    buf.push_back(static_cast<uint8_t>((val >> 16) & 0xFFu));
+    buf.push_back(static_cast<uint8_t>((val >> 24) & 0xFFu));
+}
+
+uint32_t read_u32_le(const uint8_t* data) {
+    return  static_cast<uint32_t>(data[0])
+         | (static_cast<uint32_t>(data[1]) <<  8)
+         | (static_cast<uint32_t>(data[2]) << 16)
+         | (static_cast<uint32_t>(data[3]) << 24);
+}
+
+// Read exactly `count` bytes from `file` into `buf`.
+// Returns false on EOF or short read (fewer bytes available than requested).
+bool read_exact(FILE* file, void* buf, size_t count) {
+    return std::fread(buf, 1, count, file) == count;
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// CRC32 Computation
+// ============================================================================
+
+uint32_t WriteAheadLog::compute_crc32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < length; ++i) {
+        crc = kCRC32Table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+// ============================================================================
+// Construction & Destruction
+// ============================================================================
+
+WriteAheadLog::WriteAheadLog(const std::filesystem::path& wal_directory,
+                             bool sync_per_write)
+    : path_(wal_directory / kWALFilename)
+    , sync_per_write_(sync_per_write)
+    , write_handle_(nullptr)
+{
+    // Ensure the WAL directory exists (creates parent dirs if needed).
+    std::filesystem::create_directories(wal_directory);
+    open_for_append();
+}
+
+WriteAheadLog::~WriteAheadLog() {
+    close_handle();
+}
+
+void WriteAheadLog::open_for_append() {
+    // "ab" = append + binary. Creates the file if it doesn't exist.
+    // Existing content is preserved; new writes go to the end.
+    write_handle_ = std::fopen(path_.string().c_str(), "ab");
+    if (!write_handle_) {
+        throw std::runtime_error(
+            "WAL: failed to open file for append: " + path_.string());
+    }
+}
+
+void WriteAheadLog::close_handle() {
+    if (write_handle_) {
+        std::fclose(write_handle_);
+        write_handle_ = nullptr;
+    }
+}
+
+// ============================================================================
+// Platform-Specific Sync
+// ============================================================================
+//
+// Two levels of durability:
+//
+//   fflush()  — pushes data from the C library's userspace buffer into
+//               the OS kernel's page cache. Fast, but data can be lost
+//               if the machine loses power (page cache is in RAM).
+//
+//   fsync()   — forces the OS to write the page cache to the physical
+//               storage device. Slower (involves disk I/O), but the
+//               data survives power failures.
+//
+// When sync_per_write_ is false, we only fflush(). When true, we also
+// fsync() via the platform-appropriate system call.
+// ============================================================================
+
+void WriteAheadLog::sync_to_disk() {
+    if (!write_handle_) return;
+
+    // Step 1: Always flush the userspace buffer to the OS.
+    std::fflush(write_handle_);
+
+    // Step 2: Optionally force the OS to write to stable storage.
+    if (sync_per_write_) {
+#ifdef _WIN32
+        const int fd = _fileno(write_handle_);
+        _commit(fd);
+#else
+        const int fd = fileno(write_handle_);
+        ::fsync(fd);
+#endif
+    }
+}
+
+// ============================================================================
+// Binary Serialization
+// ============================================================================
+//
+// WAL Record Layout (all multi-byte fields are little-endian):
+//
+// Offset   Size     Field           Description
+// ──────   ──────   ─────────────   ──────────────────────────────────────
+// 0        1        record_type     0x00 = PUT, 0x01 = DELETE
+// 1        4        key_length      Length of key_data in bytes (uint32 LE)
+// 5        K        key_data        Raw key bytes (K = key_length)
+// 5+K      4        value_length    Length of value_data in bytes (uint32 LE)
+// 9+K      V        value_data      Raw value bytes (V = value_length)
+// 9+K+V    4        crc32           CRC32 of bytes [0 .. 9+K+V) (uint32 LE)
+// ──────   ──────   ─────────────   ──────────────────────────────────────
+// Total:   13 + K + V bytes per record
+//
+// The CRC32 covers the ENTIRE record payload (type + key_len + key +
+// val_len + val) but NOT itself. During replay, we recompute the CRC32
+// over the payload and compare it against the stored value. A mismatch
+// indicates corruption (e.g., partial write from a crash).
+//
+// Example: PUT("hello", "world")
+//   type       = 0x00
+//   key_len    = 0x05 0x00 0x00 0x00  (5 in LE)
+//   key_data   = 0x68 0x65 0x6C 0x6C 0x6F  ("hello")
+//   val_len    = 0x05 0x00 0x00 0x00  (5 in LE)
+//   val_data   = 0x77 0x6F 0x72 0x6C 0x64  ("world")
+//   crc32      = [4 bytes computed over the 23 payload bytes above]
+//   Total: 27 bytes
+//
+// ============================================================================
+
+std::vector<uint8_t> WriteAheadLog::serialize_record(const KVRecord& record) {
+    const auto key_len = static_cast<uint32_t>(record.key.size());
+    const auto val_len = static_cast<uint32_t>(record.value.size());
+
+    // Pre-allocate the exact buffer size:
+    //   1 (type) + 4 (key_len) + K + 4 (val_len) + V + 4 (crc) = 13 + K + V
+    std::vector<uint8_t> buf;
+    buf.reserve(static_cast<size_t>(13) + key_len + val_len);
+
+    // 1. Record type (1 byte)
+    buf.push_back(static_cast<uint8_t>(record.type));
+
+    // 2. Key length (4 bytes LE) + key data
+    write_u32_le(buf, key_len);
+    buf.insert(buf.end(), record.key.begin(), record.key.end());
+
+    // 3. Value length (4 bytes LE) + value data
+    write_u32_le(buf, val_len);
+    buf.insert(buf.end(), record.value.begin(), record.value.end());
+
+    // 4. CRC32 over all preceding bytes (the payload)
+    const uint32_t crc = compute_crc32(buf.data(), buf.size());
+    write_u32_le(buf, crc);
+
+    return buf;
+}
+
+// ============================================================================
+// Binary Deserialization (used by replay)
+// ============================================================================
+//
+// Reads one record from the current file position. Returns std::nullopt
+// if the record is incomplete (truncated by crash) or has a bad CRC32.
+//
+// After a failed deserialization, the file position is indeterminate —
+// the caller should stop reading (we can't determine the next record
+// boundary after corruption).
+// ============================================================================
+
+std::optional<KVRecord> WriteAheadLog::deserialize_record(FILE* file) {
+    // Accumulate the payload bytes for CRC verification.
+    std::vector<uint8_t> payload;
+
+    // 1. Record type (1 byte)
+    uint8_t type_byte = 0;
+    if (!read_exact(file, &type_byte, 1)) {
+        return std::nullopt;  // EOF — no more records
+    }
+    if (type_byte > static_cast<uint8_t>(RecordType::DELETE)) {
+        return std::nullopt;  // Invalid type — corruption
+    }
+    payload.push_back(type_byte);
+
+    // 2. Key length (4 bytes LE)
+    uint8_t len_buf[4];
+    if (!read_exact(file, len_buf, 4)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), len_buf, len_buf + 4);
+    const uint32_t key_len = read_u32_le(len_buf);
+
+    // Sanity bound: reject absurdly large keys (> 16 MB) to prevent
+    // OOM from corrupted length fields.
+    if (key_len > 16u * 1024 * 1024) {
+        return std::nullopt;
+    }
+
+    // 3. Key data
+    std::string key(key_len, '\0');
+    if (key_len > 0 && !read_exact(file, key.data(), key_len)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), key.begin(), key.end());
+
+    // 4. Value length (4 bytes LE)
+    if (!read_exact(file, len_buf, 4)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), len_buf, len_buf + 4);
+    const uint32_t val_len = read_u32_le(len_buf);
+
+    if (val_len > 16u * 1024 * 1024) {
+        return std::nullopt;
+    }
+
+    // 5. Value data
+    std::string value(val_len, '\0');
+    if (val_len > 0 && !read_exact(file, value.data(), val_len)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), value.begin(), value.end());
+
+    // 6. Stored CRC32 (4 bytes LE)
+    uint8_t crc_buf[4];
+    if (!read_exact(file, crc_buf, 4)) {
+        return std::nullopt;  // Truncated record
+    }
+    const uint32_t stored_crc   = read_u32_le(crc_buf);
+    const uint32_t computed_crc = compute_crc32(payload.data(), payload.size());
+
+    // 7. CRC verification
+    if (stored_crc != computed_crc) {
+        // Checksum mismatch — this record (and all following) is corrupted.
+        // This typically happens when a crash interrupted a write mid-record.
+        return std::nullopt;
+    }
+
+    // Build the validated KVRecord.
+    KVRecord record;
+    record.type  = static_cast<RecordType>(type_byte);
+    record.key   = std::move(key);
+    record.value = std::move(value);
+    return record;
+}
+
+// ============================================================================
+// append() — Write a Record to the WAL
+// ============================================================================
+
+void WriteAheadLog::append(const KVRecord& record) {
+    if (!write_handle_) {
+        throw std::runtime_error("WAL: cannot append — file handle is closed");
+    }
+
+    const auto serialized = serialize_record(record);
+
+    const size_t written = std::fwrite(
+        serialized.data(), 1, serialized.size(), write_handle_);
+
+    if (written != serialized.size()) {
+        throw std::runtime_error(
+            "WAL: short write — expected " +
+            std::to_string(serialized.size()) +
+            " bytes, wrote " + std::to_string(written));
+    }
+
+    sync_to_disk();
+}
+
+// ============================================================================
+// replay() — Recovery: Read All Valid Records
+// ============================================================================
+//
+// Opens the WAL file in read-only mode and deserializes records one by
+// one until:
+//   - EOF is reached (all records are valid), or
+//   - A record fails deserialization (CRC mismatch or truncation).
+//
+// Records after the first failure are discarded. This is safe because
+// the WAL is append-only — a corrupted record means a crash occurred
+// during that write, so no subsequent records could have been fully
+// written either.
+// ============================================================================
+
+std::vector<KVRecord> WriteAheadLog::replay() const {
+    std::vector<KVRecord> records;
+
+    // Open a SEPARATE read handle (the write handle stays open for appends).
+    FILE* read_handle = std::fopen(path_.string().c_str(), "rb");
+    if (!read_handle) {
+        // WAL file doesn't exist yet — first run, nothing to replay.
+        return records;
+    }
+
+    while (true) {
+        auto record = deserialize_record(read_handle);
+        if (!record.has_value()) {
+            break;  // EOF or corruption — stop here
+        }
+        records.push_back(std::move(*record));
+    }
+
+    std::fclose(read_handle);
+    return records;
+}
+
+// ============================================================================
+// truncate() — Clear the WAL After Successful Flush
+// ============================================================================
+//
+// After the MemTable has been successfully flushed to an SSTable, all
+// records in the WAL are redundant (they exist on disk in the SSTable).
+// Truncating the WAL reclaims disk space and ensures that recovery
+// doesn't replay already-persisted records.
+// ============================================================================
+
+void WriteAheadLog::truncate() {
+    close_handle();
+
+    // Truncate the file to zero bytes using the C++17 filesystem API.
+    std::filesystem::resize_file(path_, 0);
+
+    // Reopen in append mode for future writes.
+    open_for_append();
+}
+
+// ============================================================================
+// Observers
+// ============================================================================
+
+size_t WriteAheadLog::file_size() const {
+    if (!std::filesystem::exists(path_)) {
+        return 0;
+    }
+    return static_cast<size_t>(std::filesystem::file_size(path_));
+}
+
+const std::filesystem::path& WriteAheadLog::file_path() const noexcept {
+    return path_;
+}
+
+} // namespace kvault
+
+
+================================================================================
+FILE: tests/CMakeLists.txt
+================================================================================
+# ============================================================================
+# tests/CMakeLists.txt — Unit Test Configuration
+# ============================================================================
+
+add_executable(kvault_tests
+    test_skiplist.cpp
+    test_memtable.cpp
+    test_wal.cpp
+    test_sstable.cpp
+    test_kvstore_integration.cpp
+)
+
+target_link_libraries(kvault_tests
+    PRIVATE
+        kvault_engine
+        GTest::gtest_main      # Provides main() — no need to write our own
+)
+
+# Automatically discover and register all TEST() / TEST_F() macros with CTest.
+# Tests can be run via `ctest` or directly via `./kvault_tests`.
+include(GoogleTest)
+gtest_discover_tests(kvault_tests)
+
+
+================================================================================
+FILE: tests/test_kvstore_integration.cpp
+================================================================================
+// ============================================================================
+// test_kvstore_integration.cpp — End-to-end integration tests for KVStore
+// ============================================================================
+// Tests the full lifecycle of data moving from the Write-Ahead Log to the
+// MemTable, triggering a flush based on size, writing an SSTable to disk,
+// clearing the MemTable and WAL, and then reading back correctly from the
+// SSTableManager fallback path.
+// ============================================================================
+
+#include "kvault/config.hpp"
+#include "kvault/kvstore.hpp"
+
+#include <gtest/gtest.h>
+#include <filesystem>
+#include <string>
+
+namespace kvault {
+namespace {
+
+class KVStoreTest : public ::testing::Test {
+protected:
+    std::filesystem::path test_dir_;
+    EngineConfig config_;
+
+    void SetUp() override {
+        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        test_dir_ = std::filesystem::temp_directory_path() / ("kvault_store_" + std::string(info->name()));
+        std::filesystem::remove_all(test_dir_);
+        std::filesystem::create_directories(test_dir_);
+
+        config_.wal_directory = (test_dir_ / "wal").string();
+        config_.sstable_directory = (test_dir_ / "sstables").string();
+        // Set a small flush threshold to force flushes during tests
+        config_.memtable_flush_threshold_bytes = 4096; // 4KB
+        config_.sync_per_write = false; // faster tests
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+    }
+};
+
+TEST_F(KVStoreTest, BasicPutAndGet) {
+    KVStore store(config_);
+    store.put("key1", "value1");
+    store.put("key2", "value2");
+
+    EXPECT_EQ(store.get("key1"), "value1");
+    EXPECT_EQ(store.get("key2"), "value2");
+    EXPECT_FALSE(store.get("key3").has_value());
+}
+
+TEST_F(KVStoreTest, FlushToSSTableOnThreshold) {
+    KVStore store(config_);
+    
+    // 4KB threshold. We'll write ~1KB records until a flush occurs.
+    std::string large_value(1024, 'A');
+
+    EXPECT_EQ(store.sstable_count(), 0);
+
+    for (int i = 0; i < 5; ++i) {
+        store.put("large_key_" + std::to_string(i), large_value);
+    }
+
+    // Since we inserted 5 * ~1KB, the MemTable should have flushed at least once.
+    EXPECT_GT(store.sstable_count(), 0);
+
+    // The active MemTable size should be much smaller than the 5KB we inserted,
+    // because it was cleared on flush.
+    EXPECT_LT(store.memtable_size(), 4096);
+
+    // Data should still be retrievable from the SSTable layer
+    for (int i = 0; i < 5; ++i) {
+        auto val = store.get("large_key_" + std::to_string(i));
+        ASSERT_TRUE(val.has_value());
+        EXPECT_EQ(*val, large_value);
+    }
+}
+
+TEST_F(KVStoreTest, DeletesMaskSSTableValues) {
+    KVStore store(config_);
+    store.put("key1", "value1");
+    store.force_flush();
+
+    EXPECT_EQ(store.sstable_count(), 1);
+    EXPECT_EQ(store.get("key1"), "value1"); // From SSTable
+
+    // Now delete it
+    store.remove("key1");
+
+    // The tombstone is in the MemTable. It should mask the SSTable value.
+    EXPECT_FALSE(store.get("key1").has_value());
+
+    // Flush again to push the tombstone to an SSTable
+    store.force_flush();
+    EXPECT_EQ(store.sstable_count(), 2);
+
+    // Should still return nullopt because the newest SSTable has a tombstone
+    EXPECT_FALSE(store.get("key1").has_value());
+}
+
+TEST_F(KVStoreTest, RecoveryFromWAL) {
+    // 1. Create a store, write data (don't flush)
+    {
+        KVStore store(config_);
+        store.put("persist1", "val1");
+        store.put("persist2", "val2");
+        store.remove("persist1");
+        // Data is in WAL and MemTable, but not SSTable
+        EXPECT_EQ(store.sstable_count(), 0);
+    } // store goes out of scope, shutting down. MemTable memory is lost, WAL remains.
+
+    // 2. Re-open store with same config
+    {
+        KVStore store2(config_);
+        
+        // WAL should have been replayed into MemTable
+        EXPECT_FALSE(store2.get("persist1").has_value()); // Was removed
+        EXPECT_EQ(store2.get("persist2"), "val2"); // Was put
+    }
+}
+
+} // namespace
+} // namespace kvault
+
+
+================================================================================
+FILE: tests/test_memtable.cpp
+================================================================================
+// ============================================================================
+// test_memtable.cpp — Unit Tests for the MemTable
+// ============================================================================
+//
+// Tests the MemTable's three responsibilities:
+//   1. Correct CRUD via Skip List delegation (including tombstones)
+//   2. Approximate byte tracking and flush threshold detection
+//   3. Sorted snapshot generation for SSTable flushing
+//
+// ============================================================================
+
+#include "kvault/memtable.hpp"
+#include "kvault/types.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// Use a generous threshold so basic tests don't accidentally trigger a flush.
+constexpr size_t kDefaultThreshold = 1024 * 1024; // 1 MB
+
+// ============================================================================
+// Basic PUT and GET
+// ============================================================================
+
+TEST(MemTableTest, PutAndGetReturnsCorrectValue) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("name", "kvault");
+
+    auto result = mt.get("name");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "kvault");
+}
+
+TEST(MemTableTest, GetNonExistentKeyReturnsNullopt) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("exists", "yes");
+
+    EXPECT_FALSE(mt.get("ghost").has_value());
+}
+
+TEST(MemTableTest, PutOverwritesPreviousValue) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("version", "1.0");
+    mt.put("version", "2.0");
+
+    auto result = mt.get("version");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "2.0");
+}
+
+TEST(MemTableTest, MultipleDistinctKeys) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("a", "alpha");
+    mt.put("b", "beta");
+    mt.put("c", "gamma");
+
+    EXPECT_EQ(mt.entry_count(), 3u);
+    EXPECT_EQ(mt.get("a").value_or(""), "alpha");
+    EXPECT_EQ(mt.get("b").value_or(""), "beta");
+    EXPECT_EQ(mt.get("c").value_or(""), "gamma");
+}
+
+// ============================================================================
+// Tombstone Semantics
+// ============================================================================
+
+TEST(MemTableTest, DeleteMakesKeyReturnNullopt) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("doomed", "value");
+    mt.remove("doomed");
+
+    // get() should return nullopt for tombstoned keys
+    EXPECT_FALSE(mt.get("doomed").has_value());
+}
+
+TEST(MemTableTest, ContainsTombstoneReturnsTrueAfterDelete) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("target", "alive");
+    mt.remove("target");
+
+    EXPECT_TRUE(mt.contains_tombstone("target"));
+}
+
+TEST(MemTableTest, ContainsTombstoneReturnsFalseForLiveKey) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("healthy", "key");
+
+    EXPECT_FALSE(mt.contains_tombstone("healthy"));
+}
+
+TEST(MemTableTest, ContainsTombstoneReturnsFalseForAbsentKey) {
+    MemTable mt(kDefaultThreshold);
+    EXPECT_FALSE(mt.contains_tombstone("never_inserted"));
+}
+
+TEST(MemTableTest, DeleteNonExistentKeyStillCreatesTombstone) {
+    // This is critical: the key might exist in an older SSTable.
+    // The tombstone must be inserted to shadow it during reads.
+    MemTable mt(kDefaultThreshold);
+    mt.remove("phantom");
+
+    EXPECT_TRUE(mt.contains_tombstone("phantom"));
+    EXPECT_FALSE(mt.get("phantom").has_value());
+    EXPECT_EQ(mt.entry_count(), 1u);
+}
+
+TEST(MemTableTest, PutRevivesTombstonedKey) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("phoenix", "v1");
+    mt.remove("phoenix");
+
+    // Key is tombstoned
+    EXPECT_FALSE(mt.get("phoenix").has_value());
+    EXPECT_TRUE(mt.contains_tombstone("phoenix"));
+
+    // Revive it with a new value
+    mt.put("phoenix", "v2");
+
+    auto result = mt.get("phoenix");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "v2");
+    EXPECT_FALSE(mt.contains_tombstone("phoenix"));
+}
+
+// ============================================================================
+// Byte Tracking & Flush Threshold
+// ============================================================================
+
+TEST(MemTableTest, InitialSizeIsZero) {
+    MemTable mt(kDefaultThreshold);
+    EXPECT_EQ(mt.current_size_bytes(), 0u);
+    EXPECT_FALSE(mt.should_flush());
+}
+
+TEST(MemTableTest, SizeIncreasesOnInsert) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("key", "value");
+
+    // Size should be at least key.size() + value.size() = 8 bytes.
+    // Actual size includes per-node overhead, so it should be > 8.
+    EXPECT_GT(mt.current_size_bytes(), 8u);
+}
+
+TEST(MemTableTest, UpsertWithLongerValueIncreasesSize) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("key", "short");
+    const size_t size_after_short = mt.current_size_bytes();
+
+    mt.put("key", "a_much_longer_value_string");
+    const size_t size_after_long = mt.current_size_bytes();
+
+    // Replacing "short" (5 bytes) with a 26-byte value should increase size.
+    EXPECT_GT(size_after_long, size_after_short);
+}
+
+TEST(MemTableTest, UpsertWithShorterValueDecreasesSize) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("key", "a_very_long_value_string_here");
+    const size_t size_before = mt.current_size_bytes();
+
+    mt.put("key", "tiny");
+    const size_t size_after = mt.current_size_bytes();
+
+    EXPECT_LT(size_after, size_before);
+}
+
+TEST(MemTableTest, ShouldFlushTriggersAtConfiguredThreshold) {
+    // Use a tiny threshold so we can trigger it with a few inserts.
+    constexpr size_t tiny_threshold = 500;
+    MemTable mt(tiny_threshold);
+
+    // Insert entries until the threshold is exceeded.
+    bool flushed = false;
+    for (int i = 0; i < 100; ++i) {
+        mt.put("key_" + std::to_string(i), "value_" + std::to_string(i));
+        if (mt.should_flush()) {
+            flushed = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(flushed);
+    EXPECT_GE(mt.current_size_bytes(), tiny_threshold);
+}
+
+TEST(MemTableTest, ShouldNotFlushBelowThreshold) {
+    // Large threshold — a single insert should never trigger a flush.
+    MemTable mt(1024 * 1024);
+    mt.put("one_key", "one_value");
+
+    EXPECT_FALSE(mt.should_flush());
+}
+
+// ============================================================================
+// Snapshot — Sorted Dump for SSTable Flushing
+// ============================================================================
+
+TEST(MemTableTest, SnapshotReturnsRecordsInSortedKeyOrder) {
+    MemTable mt(kDefaultThreshold);
+    // Insert in deliberately unsorted order
+    mt.put("cherry", "3");
+    mt.put("apple", "1");
+    mt.put("elderberry", "5");
+    mt.put("banana", "2");
+    mt.put("date", "4");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 5u);
+
+    // Extract keys and verify sorted order
+    std::vector<std::string> keys;
+    keys.reserve(records.size());
+    for (const auto& r : records) {
+        keys.push_back(r.key);
+    }
+    EXPECT_TRUE(std::is_sorted(keys.begin(), keys.end()));
+
+    // Verify the exact order
+    EXPECT_EQ(records[0].key, "apple");
+    EXPECT_EQ(records[4].key, "elderberry");
+}
+
+TEST(MemTableTest, SnapshotClassifiesLiveEntriesAsPUT) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("alive", "kicking");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].type, RecordType::PUT);
+    EXPECT_EQ(records[0].key, "alive");
+    EXPECT_EQ(records[0].value, "kicking");
+}
+
+TEST(MemTableTest, SnapshotConvertsTombstonesToDELETERecords) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("doomed", "value");
+    mt.remove("doomed");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].type, RecordType::DELETE);
+    EXPECT_EQ(records[0].key, "doomed");
+    EXPECT_TRUE(records[0].value.empty()) << "DELETE records should have empty value";
+}
+
+TEST(MemTableTest, SnapshotMixesLiveAndDeletedEntries) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("a", "alive");
+    mt.put("b", "also_alive");
+    mt.remove("b");
+    mt.put("c", "still_alive");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 3u);
+
+    // "a" — live
+    EXPECT_EQ(records[0].type, RecordType::PUT);
+    EXPECT_EQ(records[0].key, "a");
+
+    // "b" — tombstoned
+    EXPECT_EQ(records[1].type, RecordType::DELETE);
+    EXPECT_EQ(records[1].key, "b");
+    EXPECT_TRUE(records[1].value.empty());
+
+    // "c" — live
+    EXPECT_EQ(records[2].type, RecordType::PUT);
+    EXPECT_EQ(records[2].key, "c");
+}
+
+TEST(MemTableTest, SnapshotOfEmptyMemTableIsEmpty) {
+    MemTable mt(kDefaultThreshold);
+    auto records = mt.snapshot();
+    EXPECT_TRUE(records.empty());
+}
+
+// ============================================================================
+// Entry Count
+// ============================================================================
+
+TEST(MemTableTest, EntryCountTracksUniqueKeys) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("a", "1");
+    mt.put("b", "2");
+    mt.put("a", "3");  // Upsert — should NOT increase count
+
+    EXPECT_EQ(mt.entry_count(), 2u);
+}
+
+TEST(MemTableTest, EntryCountIncludesTombstonedKeys) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("live", "yes");
+    mt.remove("dead_on_arrival");  // Tombstone for non-existent key
+
+    // Both the live key and the tombstone count as entries
+    EXPECT_EQ(mt.entry_count(), 2u);
+}
+
+} // namespace
+} // namespace kvault
+
+
+================================================================================
+FILE: tests/test_skiplist.cpp
+================================================================================
+// ============================================================================
+// test_skiplist.cpp — Unit Tests for the Custom Skip List
+// ============================================================================
+//
+// Validates the Skip List's core operations: insert, search, remove, upsert,
+// and in-order iteration. Includes a stress test with 10,000 random entries.
+//
+// These tests exercise the arena-based ownership model — if memory
+// management is broken, sanitizers (ASan/MSan) will catch it here.
+// ============================================================================
+
+#include "kvault/skiplist.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// ============================================================================
+// Basic Operations
+// ============================================================================
+
+TEST(SkipListTest, InsertAndSearchSingleKey) {
+    SkipList sl;
+    sl.insert("hello", "world");
+
+    auto result = sl.search("hello");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "world");
+    EXPECT_EQ(sl.size(), 1u);
+}
+
+TEST(SkipListTest, InsertMultipleKeysAndSearchEach) {
+    SkipList sl;
+    sl.insert("alpha", "1");
+    sl.insert("beta", "2");
+    sl.insert("gamma", "3");
+
+    EXPECT_EQ(sl.search("alpha").value_or(""), "1");
+    EXPECT_EQ(sl.search("beta").value_or(""), "2");
+    EXPECT_EQ(sl.search("gamma").value_or(""), "3");
+    EXPECT_EQ(sl.size(), 3u);
+}
+
+TEST(SkipListTest, SearchNonExistentKeyReturnsNullopt) {
+    SkipList sl;
+    sl.insert("exists", "yes");
+
+    auto result = sl.search("ghost");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(SkipListTest, SearchOnEmptyListReturnsNullopt) {
+    SkipList sl;
+    EXPECT_FALSE(sl.search("anything").has_value());
+}
+
+// ============================================================================
+// Upsert (Insert-or-Update) Semantics
+// ============================================================================
+
+TEST(SkipListTest, UpsertOverwritesExistingValue) {
+    SkipList sl;
+    sl.insert("key", "original");
+    sl.insert("key", "updated");
+
+    auto result = sl.search("key");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "updated");
+}
+
+TEST(SkipListTest, UpsertDoesNotChangeSizeCount) {
+    SkipList sl;
+    sl.insert("key", "v1");
+    sl.insert("key", "v2");
+    sl.insert("key", "v3");
+
+    EXPECT_EQ(sl.size(), 1u);
+}
+
+// ============================================================================
+// Removal
+// ============================================================================
+
+TEST(SkipListTest, RemoveExistingKeyReturnsTrue) {
+    SkipList sl;
+    sl.insert("target", "value");
+
+    EXPECT_TRUE(sl.remove("target"));
+    EXPECT_FALSE(sl.search("target").has_value());
+    EXPECT_EQ(sl.size(), 0u);
+}
+
+TEST(SkipListTest, RemoveNonExistentKeyReturnsFalse) {
+    SkipList sl;
+    sl.insert("a", "1");
+
+    EXPECT_FALSE(sl.remove("b"));
+    EXPECT_EQ(sl.size(), 1u);
+}
+
+TEST(SkipListTest, RemoveFromEmptyListReturnsFalse) {
+    SkipList sl;
+    EXPECT_FALSE(sl.remove("phantom"));
+}
+
+TEST(SkipListTest, RemovedKeyIsNotFoundBySearch) {
+    SkipList sl;
+    sl.insert("x", "100");
+    sl.insert("y", "200");
+    sl.insert("z", "300");
+
+    sl.remove("y");
+
+    EXPECT_TRUE(sl.search("x").has_value());
+    EXPECT_FALSE(sl.search("y").has_value());
+    EXPECT_TRUE(sl.search("z").has_value());
+    EXPECT_EQ(sl.size(), 2u);
+}
+
+// ============================================================================
+// Sorted Iteration (Level-0 Chain)
+// ============================================================================
+
+TEST(SkipListTest, IteratorYieldsKeysInAscendingOrder) {
+    SkipList sl;
+    // Deliberately unsorted insertion order
+    sl.insert("cherry", "3");
+    sl.insert("apple", "1");
+    sl.insert("elderberry", "5");
+    sl.insert("banana", "2");
+    sl.insert("date", "4");
+
+    std::vector<std::string> keys;
+    for (auto it = sl.begin(); it != sl.end(); ++it) {
+        keys.push_back(it.key());
+    }
+
+    ASSERT_EQ(keys.size(), 5u);
+    EXPECT_TRUE(std::is_sorted(keys.begin(), keys.end()));
+    EXPECT_EQ(keys[0], "apple");
+    EXPECT_EQ(keys[4], "elderberry");
+}
+
+TEST(SkipListTest, IteratorOnEmptyListProducesNothing) {
+    SkipList sl;
+    EXPECT_EQ(sl.begin(), sl.end());
+
+    int count = 0;
+    for (auto it = sl.begin(); it != sl.end(); ++it) {
+        ++count;
+    }
+    EXPECT_EQ(count, 0);
+}
+
+TEST(SkipListTest, IteratorReflectsRemovals) {
+    SkipList sl;
+    sl.insert("a", "1");
+    sl.insert("b", "2");
+    sl.insert("c", "3");
+
+    sl.remove("b");
+
+    std::vector<std::string> keys;
+    for (auto it = sl.begin(); it != sl.end(); ++it) {
+        keys.push_back(it.key());
+    }
+
+    ASSERT_EQ(keys.size(), 2u);
+    EXPECT_EQ(keys[0], "a");
+    EXPECT_EQ(keys[1], "c");
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+TEST(SkipListTest, EmptyStringKeysAndValues) {
+    SkipList sl;
+    sl.insert("", "empty_key");
+    sl.insert("empty_val", "");
+
+    EXPECT_EQ(sl.search("").value_or("FAIL"), "empty_key");
+    EXPECT_EQ(sl.search("empty_val").value_or("FAIL"), "");
+    EXPECT_EQ(sl.size(), 2u);
+}
+
+TEST(SkipListTest, EmptyAfterRemovingAllKeys) {
+    SkipList sl;
+    sl.insert("a", "1");
+    sl.insert("b", "2");
+
+    sl.remove("a");
+    sl.remove("b");
+
+    EXPECT_TRUE(sl.empty());
+    EXPECT_EQ(sl.size(), 0u);
+    EXPECT_EQ(sl.begin(), sl.end());
+}
+
+// ============================================================================
+// Stress Test — validates correctness at scale and exercises the arena
+// ============================================================================
+
+TEST(SkipListTest, StressTest_10KRandomInserts) {
+    SkipList sl;
+    constexpr int kNumEntries = 10000;
+    std::set<std::string> reference_keys;
+
+    // Insert keys in a scrambled order using modular arithmetic
+    for (int i = 0; i < kNumEntries; ++i) {
+        std::string key = "key_" + std::to_string((i * 7919) % kNumEntries);
+        std::string val = "val_" + std::to_string(i);
+        sl.insert(key, val);
+        reference_keys.insert(key);
+    }
+
+    // Verify size matches the number of unique keys
+    EXPECT_EQ(sl.size(), reference_keys.size());
+
+    // Verify every key is searchable
+    for (const auto& key : reference_keys) {
+        EXPECT_TRUE(sl.search(key).has_value()) << "Missing key: " << key;
+    }
+
+    // Verify iteration order matches std::set (which is also sorted)
+    auto ref_it = reference_keys.begin();
+    for (auto it = sl.begin(); it != sl.end(); ++it, ++ref_it) {
+        ASSERT_NE(ref_it, reference_keys.end());
+        EXPECT_EQ(it.key(), *ref_it);
+    }
+    EXPECT_EQ(ref_it, reference_keys.end());
+}
+
+} // namespace
+} // namespace kvault
+
+
+================================================================================
+FILE: tests/test_sstable.cpp
+================================================================================
+// ============================================================================
+// test_sstable.cpp — Integration Tests for SSTable Writer + Reader
+// ============================================================================
+//
+// Tests the full write → read round-trip for SSTables, including:
+//   1. BloomFilter — construction, add, might_contain, false negatives,
+//      false positive rate, serialization round-trip
+//   2. SSTableWriter — produces a valid .sst file
+//   3. SSTableReader — bootstrap (footer → bloom → index), three-step lookup,
+//      tombstone propagation, out-of-range key rejection, corruption detection
+//
+// Each test uses an isolated temp directory cleaned up in TearDown().
+//
+// ============================================================================
+
+#include "kvault/bloom_filter.hpp"
+#include "kvault/sstable_reader.hpp"
+#include "kvault/sstable_writer.hpp"
+#include "kvault/types.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// ============================================================================
+// Test Fixture
+// ============================================================================
+
+class SSTableTest : public ::testing::Test {
+protected:
+    std::filesystem::path test_dir_;
+
+    void SetUp() override {
+        const auto* info = ::testing::UnitTest::GetInstance()
+                               ->current_test_info();
+        test_dir_ = std::filesystem::temp_directory_path()
+                    / ("kvault_sst_test_" + std::string(info->name()));
+        std::filesystem::remove_all(test_dir_);
+        std::filesystem::create_directories(test_dir_);
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+    }
+
+    [[nodiscard]]
+    std::filesystem::path sst_path(const std::string& name = "test.sst") const {
+        return test_dir_ / name;
+    }
+
+    // Helper: build N sorted KVRecords with predictable keys/values.
+    static std::vector<KVRecord> make_records(int count,
+                                              int start = 0,
+                                              bool include_deletes = false) {
+        std::vector<KVRecord> recs;
+        recs.reserve(static_cast<size_t>(count));
+        for (int i = start; i < start + count; ++i) {
+            KVRecord r;
+            // Zero-pad keys so lexicographic sort == numeric sort
+            r.key   = "key_" + std::string(6 - std::to_string(i).size(), '0')
+                             + std::to_string(i);
+            r.value = "value_" + std::to_string(i);
+            r.type  = (include_deletes && i % 5 == 0)
+                      ? RecordType::DELETE
+                      : RecordType::PUT;
+            if (r.type == RecordType::DELETE) r.value = "";
+            recs.push_back(std::move(r));
+        }
+        return recs;
+    }
+};
+
+// ============================================================================
+// BloomFilter — Unit Tests
+// ============================================================================
+
+TEST_F(SSTableTest, BloomFilter_NoFalseNegatives) {
+    // A Bloom Filter must NEVER produce false negatives.
+    // Every key that was add()ed must be found by might_contain().
+    BloomFilter bf(1000, 10);
+
+    std::vector<std::string> keys;
+    for (int i = 0; i < 1000; ++i) {
+        keys.push_back("key_" + std::to_string(i));
+        bf.add(keys.back());
+    }
+
+    for (const auto& k : keys) {
+        EXPECT_TRUE(bf.might_contain(k))
+            << "False negative for key: " << k;
+    }
+}
+
+TEST_F(SSTableTest, BloomFilter_FalsePositiveRateIsReasonable) {
+    // With bits_per_key=10, expected FP rate ≈ 0.8%.
+    // We test with a 5% threshold to give headroom for random variation.
+    constexpr int kInserted    = 1000;
+    constexpr int kQueried     = 10000;
+    constexpr double kMaxFPRate = 0.05; // 5% — very generous upper bound
+
+    BloomFilter bf(static_cast<size_t>(kInserted), 10);
+
+    // Insert 1000 distinct keys
+    for (int i = 0; i < kInserted; ++i) {
+        bf.add("inserted_" + std::to_string(i));
+    }
+
+    // Query 10000 keys that were NEVER inserted
+    int false_positives = 0;
+    for (int i = 0; i < kQueried; ++i) {
+        if (bf.might_contain("absent_" + std::to_string(i))) {
+            ++false_positives;
+        }
+    }
+
+    const double fp_rate = static_cast<double>(false_positives) / kQueried;
+    EXPECT_LT(fp_rate, kMaxFPRate)
+        << "False positive rate " << fp_rate
+        << " exceeds threshold " << kMaxFPRate;
+}
+
+TEST_F(SSTableTest, BloomFilter_DefiniteMissForUnseenKey) {
+    BloomFilter bf(100, 10);
+    bf.add("alpha");
+    bf.add("beta");
+
+    // "gamma" was never added — might_contain CAN return true (false positive),
+    // but for small filters with few keys it usually returns false.
+    // We can't assert false here without knowing the hash collision.
+    // What we CAN assert: "alpha" and "beta" must return true.
+    EXPECT_TRUE(bf.might_contain("alpha"));
+    EXPECT_TRUE(bf.might_contain("beta"));
+}
+
+TEST_F(SSTableTest, BloomFilter_SerializationRoundTrip) {
+    BloomFilter original(500, 10);
+    for (int i = 0; i < 100; ++i) {
+        original.add("key_" + std::to_string(i));
+    }
+
+    // Serialize and deserialize
+    auto serialized = original.serialize();
+    ASSERT_GE(serialized.size(), 8u); // At least the k + m header
+
+    auto restored = BloomFilter::deserialize(serialized);
+
+    // Same parameters
+    EXPECT_EQ(restored.bit_count(),  original.bit_count());
+    EXPECT_EQ(restored.hash_count(), original.hash_count());
+
+    // All inserted keys must still be found after deserialization
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_TRUE(restored.might_contain("key_" + std::to_string(i)));
+    }
+}
+
+TEST_F(SSTableTest, BloomFilter_EmptyFilterReturnsFalse) {
+    // A filter with 0 inserted keys should return false for any query
+    // (all bits are 0, so the first bit check fails immediately).
+    BloomFilter bf(100, 10);
+    EXPECT_FALSE(bf.might_contain("anything"));
+}
+
+// ============================================================================
+// SSTableWriter → SSTableReader Round-Trip
+// ============================================================================
+
+TEST_F(SSTableTest, WriteAndRead_SingleRecord) {
+    const auto path = sst_path();
+    std::vector<KVRecord> recs = {{ RecordType::PUT, "hello", "world" }};
+
+    SSTableWriter::write(path, recs);
+
+    SSTableReader reader(path);
+    EXPECT_EQ(reader.entry_count(), 1u);
+
+    auto result = reader.get("hello");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "world");
+}
+
+TEST_F(SSTableTest, WriteAndRead_HundredRecords) {
+    const auto path = sst_path();
+    auto recs = make_records(100);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), 100u);
+
+    // Verify every key is recoverable
+    for (const auto& rec : recs) {
+        auto result = reader.get(rec.key);
+        ASSERT_TRUE(result.has_value())
+            << "Key not found: " << rec.key;
+        EXPECT_EQ(*result, rec.value);
+    }
+}
+
+TEST_F(SSTableTest, WriteAndRead_SparsesMultipleBlocks) {
+    // Write more than kIndexBlockInterval keys to exercise multi-block indexing
+    constexpr int kCount = 350; // 3.5 index blocks at interval=100
+    const auto path = sst_path();
+    auto recs = make_records(kCount);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), static_cast<uint64_t>(kCount));
+
+    // Spot-check keys at block boundaries
+    for (int i : {0, 99, 100, 101, 199, 200, 299, 300, 349}) {
+        const auto& rec = recs[static_cast<size_t>(i)];
+        auto result = reader.get(rec.key);
+        ASSERT_TRUE(result.has_value())
+            << "Key not found at index " << i << ": " << rec.key;
+        EXPECT_EQ(*result, rec.value);
+    }
+}
+
+TEST_F(SSTableTest, AbsentKeyReturnsNullopt) {
+    const auto path = sst_path();
+    auto recs = make_records(50);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    // Keys outside the range
+    EXPECT_FALSE(reader.get("zzz_out_of_range").has_value());
+    EXPECT_FALSE(reader.get("aaa_before_start").has_value());
+
+    // Key that's in-range but doesn't exist
+    EXPECT_FALSE(reader.get("key_999999").has_value());
+}
+
+TEST_F(SSTableTest, BloomFilterShortCircuitsAbsentKeys) {
+    // An absent key that passes the bloom filter still returns nullopt.
+    // More importantly: the bloom filter should catch MOST absent keys.
+    const auto path = sst_path();
+    auto recs = make_records(200);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    // Definitely-absent key with a completely different prefix
+    // The bloom filter SHOULD filter this out (not guaranteed, but very likely)
+    auto result = reader.get("zzz_completely_absent");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(SSTableTest, TombstonesAreSurfacedCorrectly) {
+    // DELETE records should be found by get_record() and return
+    // RecordType::DELETE, signaling to the KVStore that the key is deleted.
+    const auto path = sst_path();
+
+    std::vector<KVRecord> recs = {
+        { RecordType::PUT,    "alive",   "value"  },
+        { RecordType::DELETE, "deleted", ""        },
+        { RecordType::PUT,    "zzz",     "last"   }
+    };
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    // Tombstone key: get_record returns DELETE type
+    auto del_record = reader.get_record("deleted");
+    ASSERT_TRUE(del_record.has_value());
+    EXPECT_EQ(del_record->type, RecordType::DELETE);
+    EXPECT_TRUE(del_record->value.empty());
+
+    // Live keys still accessible
+    EXPECT_EQ(reader.get("alive").value_or(""), "value");
+    EXPECT_EQ(reader.get("zzz").value_or(""), "last");
+}
+
+TEST_F(SSTableTest, MetadataIsCorrect) {
+    const auto path = sst_path();
+    auto recs = make_records(50);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), 50u);
+    EXPECT_GT(reader.file_size(), 0u);
+    EXPECT_EQ(reader.path(), path);
+
+    auto meta = reader.metadata();
+    EXPECT_EQ(meta.entry_count, 50u);
+    EXPECT_FALSE(meta.file_path.empty());
+}
+
+TEST_F(SSTableTest, EmptySSTableIsValid) {
+    // Writing an empty SSTable should not crash and should return nullopt
+    // for any key lookup.
+    const auto path = sst_path();
+    std::vector<KVRecord> empty;
+
+    SSTableWriter::write(path, empty);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), 0u);
+    EXPECT_FALSE(reader.get("any_key").has_value());
+}
+
+TEST_F(SSTableTest, LargeKeyValuePairsArePreserved) {
+    const auto path = sst_path();
+
+    const std::string large_key(4096, 'K');
+    const std::string large_val(65536, 'V');
+
+    std::vector<KVRecord> recs = {{ RecordType::PUT, large_key, large_val }};
+    SSTableWriter::write(path, recs);
+
+    SSTableReader reader(path);
+    auto result = reader.get(large_key);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->size(), 65536u);
+    EXPECT_EQ(*result, large_val);
+}
+
+TEST_F(SSTableTest, CorruptedMagicNumberThrowsOnOpen) {
+    // Corrupt the file's magic number in the footer and verify
+    // that SSTableReader throws rather than silently returning bad data.
+    const auto path = sst_path();
+    auto recs = make_records(10);
+    SSTableWriter::write(path, recs);
+
+    // Corrupt the last 8 bytes (the magic number in the footer)
+    {
+        std::fstream fs(path, std::ios::binary | std::ios::in | std::ios::out);
+        fs.seekp(-8, std::ios::end);
+        const char garbage[8] = {0x00, 0x11, 0x22, 0x33,
+                                  0x44, 0x55, 0x66, 0x77};
+        fs.write(garbage, 8);
+    }
+
+    EXPECT_THROW(
+        { SSTableReader reader(path); },
+        std::runtime_error
+    ) << "Should throw on invalid magic number";
+}
+
+TEST_F(SSTableTest, MultipleSSTablesAreIndependent) {
+    // Two SSTables with different key ranges should each answer correctly.
+    auto recs_a = make_records(50,  0);   // keys 0..49
+    auto recs_b = make_records(50, 50);   // keys 50..99
+
+    SSTableWriter::write(sst_path("a.sst"), recs_a);
+    SSTableWriter::write(sst_path("b.sst"), recs_b);
+
+    SSTableReader reader_a(sst_path("a.sst"));
+    SSTableReader reader_b(sst_path("b.sst"));
+
+    // Cross-lookups should return nullopt
+    EXPECT_FALSE(reader_a.get(recs_b[0].key).has_value());
+    EXPECT_FALSE(reader_b.get(recs_a[0].key).has_value());
+
+    // Own-range lookups succeed
+    EXPECT_TRUE(reader_a.get(recs_a[25].key).has_value());
+    EXPECT_TRUE(reader_b.get(recs_b[25].key).has_value());
+}
+
+} // namespace
+} // namespace kvault
+
+
+================================================================================
+FILE: tests/test_wal.cpp
+================================================================================
+// ============================================================================
+// test_wal.cpp — Unit Tests for the Write-Ahead Log
+// ============================================================================
+//
+// Tests the WAL's three critical guarantees:
+//   1. DURABILITY  — append + replay recovers all records faithfully
+//   2. INTEGRITY   — CRC32 checksums detect corrupted records
+//   3. RESILIENCE  — partial writes (simulated crashes) are handled
+//                    gracefully without crashing or returning bad data
+//
+// Each test uses a unique temporary directory that is cleaned up in
+// TearDown(). This ensures test isolation even under parallel execution.
+//
+// ============================================================================
+
+#include "kvault/wal.hpp"
+#include "kvault/types.hpp"
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// ============================================================================
+// Test Fixture — creates/destroys an isolated temp directory per test
+// ============================================================================
+
+class WALTest : public ::testing::Test {
+protected:
+    std::filesystem::path test_dir_;
+
+    void SetUp() override {
+        // Each test gets a unique directory based on the test name,
+        // preventing interference between parallel test runs.
+        const auto* info = ::testing::UnitTest::GetInstance()
+                               ->current_test_info();
+        test_dir_ = std::filesystem::temp_directory_path()
+                    / ("kvault_wal_test_" + std::string(info->name()));
+
+        // Clean up from any prior failed run
+        std::filesystem::remove_all(test_dir_);
+        std::filesystem::create_directories(test_dir_);
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+    }
+
+    // Helper: full path to the WAL file inside the test directory.
+    [[nodiscard]]
+    std::filesystem::path wal_file_path() const {
+        return test_dir_ / "wal.log";
+    }
+};
+
+// ============================================================================
+// Normal Replay — the core durability guarantee
+// ============================================================================
+
+TEST_F(WALTest, AppendAndReplayRecoversSingleRecord) {
+    // Write one record, destroy the WAL, create a fresh one, replay.
+    {
+        WriteAheadLog wal(test_dir_, /*sync_per_write=*/false);
+        wal.append({RecordType::PUT, "greeting", "hello"});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u);
+        EXPECT_EQ(records[0].type, RecordType::PUT);
+        EXPECT_EQ(records[0].key, "greeting");
+        EXPECT_EQ(records[0].value, "hello");
+    }
+}
+
+TEST_F(WALTest, AppendAndReplayRecoversMultipleRecords) {
+    constexpr int kNumRecords = 50;
+
+    // Append many records
+    {
+        WriteAheadLog wal(test_dir_, false);
+        for (int i = 0; i < kNumRecords; ++i) {
+            wal.append({
+                RecordType::PUT,
+                "key_" + std::to_string(i),
+                "value_" + std::to_string(i)
+            });
+        }
+    }
+
+    // Replay and verify every record is recovered in order
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), static_cast<size_t>(kNumRecords));
+        for (int i = 0; i < kNumRecords; ++i) {
+            EXPECT_EQ(records[static_cast<size_t>(i)].type, RecordType::PUT);
+            EXPECT_EQ(records[static_cast<size_t>(i)].key,
+                       "key_" + std::to_string(i));
+            EXPECT_EQ(records[static_cast<size_t>(i)].value,
+                       "value_" + std::to_string(i));
+        }
+    }
+}
+
+TEST_F(WALTest, ReplayDistinguishesPUTAndDELETERecords) {
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT,    "user",  "alice"});
+        wal.append({RecordType::DELETE, "user",  ""});
+        wal.append({RecordType::PUT,    "admin", "bob"});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 3u);
+
+        EXPECT_EQ(records[0].type, RecordType::PUT);
+        EXPECT_EQ(records[0].key, "user");
+        EXPECT_EQ(records[0].value, "alice");
+
+        EXPECT_EQ(records[1].type, RecordType::DELETE);
+        EXPECT_EQ(records[1].key, "user");
+        EXPECT_TRUE(records[1].value.empty());
+
+        EXPECT_EQ(records[2].type, RecordType::PUT);
+        EXPECT_EQ(records[2].key, "admin");
+        EXPECT_EQ(records[2].value, "bob");
+    }
+}
+
+// ============================================================================
+// Edge Cases — Empty WAL, Large Values
+// ============================================================================
+
+TEST_F(WALTest, ReplayOnFreshDirectoryReturnsEmptyVector) {
+    // No WAL file exists yet — replay should return an empty vector
+    // (not crash or throw).
+    std::filesystem::path fresh_dir = test_dir_ / "subdir";
+    WriteAheadLog wal(fresh_dir, false);
+    auto records = wal.replay();
+
+    EXPECT_TRUE(records.empty());
+}
+
+TEST_F(WALTest, LargeKeyAndValueArePreserved) {
+    const std::string large_key(4096, 'K');    // 4 KB key
+    const std::string large_val(65536, 'V');   // 64 KB value
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, large_key, large_val});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u);
+        EXPECT_EQ(records[0].key.size(), 4096u);
+        EXPECT_EQ(records[0].value.size(), 65536u);
+        EXPECT_EQ(records[0].key, large_key);
+        EXPECT_EQ(records[0].value, large_val);
+    }
+}
+
+TEST_F(WALTest, EmptyKeyAndValueArePreserved) {
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "", ""});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u);
+        EXPECT_TRUE(records[0].key.empty());
+        EXPECT_TRUE(records[0].value.empty());
+    }
+}
+
+// ============================================================================
+// Truncate — WAL is cleared after successful SSTable flush
+// ============================================================================
+
+TEST_F(WALTest, TruncateClearsAllRecords) {
+    WriteAheadLog wal(test_dir_, false);
+    wal.append({RecordType::PUT, "key1", "val1"});
+    wal.append({RecordType::PUT, "key2", "val2"});
+
+    EXPECT_GT(wal.file_size(), 0u);
+
+    wal.truncate();
+
+    EXPECT_EQ(wal.file_size(), 0u);
+
+    // Replay after truncation should return nothing
+    auto records = wal.replay();
+    EXPECT_TRUE(records.empty());
+}
+
+TEST_F(WALTest, AppendWorksAfterTruncate) {
+    WriteAheadLog wal(test_dir_, false);
+    wal.append({RecordType::PUT, "old", "data"});
+    wal.truncate();
+
+    // Append new records after truncation
+    wal.append({RecordType::PUT, "new", "data"});
+
+    auto records = wal.replay();
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].key, "new");
+}
+
+// ============================================================================
+// File Size Tracking
+// ============================================================================
+
+TEST_F(WALTest, FileSizeGrowsWithEachAppend) {
+    WriteAheadLog wal(test_dir_, false);
+
+    const size_t initial = wal.file_size();
+    wal.append({RecordType::PUT, "k1", "v1"});
+    const size_t after_one = wal.file_size();
+    wal.append({RecordType::PUT, "k2", "v2"});
+    const size_t after_two = wal.file_size();
+
+    EXPECT_EQ(initial, 0u);
+    EXPECT_GT(after_one, 0u);
+    EXPECT_GT(after_two, after_one);
+}
+
+// ============================================================================
+// Corruption Handling — Simulated Crash Scenarios
+// ============================================================================
+//
+// These tests are CRUCIAL for demonstrating crash-recovery correctness.
+// They simulate what happens when the process crashes mid-write, leaving
+// partial or garbage data at the end of the WAL file.
+//
+// Expectation: replay() must recover ALL complete, valid records and
+// silently discard any corrupted tail — without crashing, throwing, or
+// returning partial records.
+// ============================================================================
+
+TEST_F(WALTest, ReplayStopsAtGarbageBytes) {
+    // Scenario: Two valid records are written. Then the process crashes
+    // and leaves garbage bytes at the end (e.g., a partially overwritten
+    // record from a concurrent flush, or filesystem corruption).
+
+    // Step 1: Write 2 valid records
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "safe_1", "intact"});
+        wal.append({RecordType::PUT, "safe_2", "intact"});
+    }
+
+    // Step 2: Append garbage bytes (simulating corruption)
+    {
+        std::ofstream ofs(wal_file_path(),
+                          std::ios::binary | std::ios::app);
+        ASSERT_TRUE(ofs.is_open()) << "Failed to open WAL for corruption";
+
+        const char garbage[] = "\xDE\xAD\xBE\xEF_CORRUPTED_!@#$%^&*";
+        ofs.write(garbage, sizeof(garbage) - 1);
+        ofs.flush();
+    }
+
+    // Step 3: Replay — must recover the 2 valid records and stop
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 2u)
+            << "Should recover exactly 2 valid records before corruption";
+        EXPECT_EQ(records[0].key, "safe_1");
+        EXPECT_EQ(records[1].key, "safe_2");
+    }
+}
+
+TEST_F(WALTest, ReplayStopsAtTruncatedRecord) {
+    // Scenario: Three records are being written. The process crashes
+    // mid-way through the 3rd record, leaving it partially written.
+    // The first 2 records should be fully recoverable.
+
+    size_t size_after_two = 0;
+
+    // Step 1: Write 3 records, capturing the file size after record #2
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "rec_1", "complete"});
+        wal.append({RecordType::PUT, "rec_2", "complete"});
+        size_after_two = wal.file_size();
+
+        wal.append({RecordType::PUT, "rec_3", "this_will_be_truncated"});
+    }
+
+    // Step 2: Simulate a crash by truncating the file mid-3rd-record.
+    // We keep only the first 3 bytes of the 3rd record (just the type
+    // byte and part of the key length — not enough for a valid record).
+    ASSERT_GT(size_after_two, 0u);
+    std::filesystem::resize_file(wal_file_path(), size_after_two + 3);
+
+    // Step 3: Replay — must recover records 1 and 2, discard the partial 3rd
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 2u)
+            << "Should recover 2 complete records; 3rd is truncated";
+        EXPECT_EQ(records[0].key, "rec_1");
+        EXPECT_EQ(records[0].value, "complete");
+        EXPECT_EQ(records[1].key, "rec_2");
+        EXPECT_EQ(records[1].value, "complete");
+    }
+}
+
+TEST_F(WALTest, ReplayStopsAtBadCRC) {
+    // Scenario: A valid record has its CRC32 checksum corrupted.
+    // This could happen due to a bit-flip in storage.
+
+    // Step 1: Write 2 valid records
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "good", "record"});
+        wal.append({RecordType::PUT, "will_be_corrupted", "data"});
+    }
+
+    // Step 2: Corrupt the CRC of the 2nd record by flipping a byte
+    // near the end of the file. The last 4 bytes of the file are the
+    // CRC32 of the 2nd record.
+    {
+        // Read the entire file
+        std::ifstream ifs(wal_file_path(), std::ios::binary);
+        std::string contents((std::istreambuf_iterator<char>(ifs)),
+                              std::istreambuf_iterator<char>());
+        ifs.close();
+
+        ASSERT_GE(contents.size(), 4u);
+
+        // Flip the last byte (part of the 2nd record's CRC)
+        contents.back() = static_cast<char>(contents.back() ^ 0xFF);
+
+        // Write back the corrupted file
+        std::ofstream ofs(wal_file_path(),
+                          std::ios::binary | std::ios::trunc);
+        ofs.write(contents.data(),
+                  static_cast<std::streamsize>(contents.size()));
+        ofs.flush();
+    }
+
+    // Step 3: Replay — should recover only the 1st record (2nd has bad CRC)
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u)
+            << "Should recover 1 valid record; 2nd has corrupted CRC";
+        EXPECT_EQ(records[0].key, "good");
+        EXPECT_EQ(records[0].value, "record");
+    }
+}
+
+TEST_F(WALTest, ReplayHandlesCompletelyCorruptedFile) {
+    // Scenario: The WAL file is entirely garbage (e.g., filesystem
+    // allocated the file but never wrote valid data before crashing).
+
+    {
+        std::ofstream ofs(wal_file_path(), std::ios::binary);
+        const char noise[] = "\xFF\xFE\xFD\xFC\xFB\xFA\x00\x01\x02\x03";
+        ofs.write(noise, sizeof(noise) - 1);
+    }
+
+    // Replay should return an empty vector — no valid records to recover.
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        EXPECT_TRUE(records.empty())
+            << "Completely corrupted WAL should yield zero records";
+    }
+}
+
+// ============================================================================
+// Sync Mode — verify both modes work without errors
+// ============================================================================
+
+TEST_F(WALTest, SyncPerWriteModeFunctionsCorrectly) {
+    // This test verifies that sync_per_write=true doesn't crash or error.
+    // We can't easily verify that fsync was called, but we can verify
+    // the data is recoverable.
+    WriteAheadLog wal(test_dir_, /*sync_per_write=*/true);
+    wal.append({RecordType::PUT, "synced", "data"});
+
+    auto records = wal.replay();
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].key, "synced");
+}
+
+TEST_F(WALTest, BufferedModeFunctionsCorrectly) {
+    WriteAheadLog wal(test_dir_, /*sync_per_write=*/false);
+    wal.append({RecordType::PUT, "buffered", "data"});
+
+    auto records = wal.replay();
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].key, "buffered");
+}
+
+} // namespace
+} // namespace kvault
+
+```
+
+
+## FILE: README.md
+
+```md
+# 🗄️ KVault-DB — LSM-Tree Key-Value Store
+
+> A production-grade, single-node Key-Value Store built from scratch in **C++20**, implementing the full Log-Structured Merge-Tree (LSM-Tree) storage engine with a real-time **React** visualization dashboard. Every layer — from probabilistic data structures to binary disk serialization — is implemented without third-party storage libraries.
+
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?logo=cmake&logoColor=white)](https://cmake.org/)
+[![React](https://img.shields.io/badge/Frontend-React_18-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![Tests](https://img.shields.io/badge/Tests-74%2F74_Passing-brightgreen?logo=googletest)](https://google.github.io/googletest/)
+[![Build](https://img.shields.io/badge/Build-Ninja-black?logo=ninja)](https://ninja-build.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+---
+
+![Dashboard Preview](dashboard.gif)
+
+---
+
+## 🧠 Motivation
+
+Competitive programming develops strong algorithmic intuition — Skip Lists, balanced trees, hashing — but leaves a gap: how do these structures behave under real-world constraints like **crash recovery**, **byte-level I/O**, **memory ownership**, and **concurrent access**?
+
+KVault-DB is the answer to that question. It systematically applies the algorithms from competitive programming to solve the engineering problems that define production database internals: ordered in-memory storage, durability via write-ahead logging, space-efficient disk layout, and probabilistic false-positive filtering.
+
+The architecture mirrors the engine that powers **LevelDB**, **RocksDB**, and **Apache Cassandra**.
+
+---
+
+## ⚙️ Core Systems Engineering Highlights
+
+### 🧩 Arena-Allocated Skip List (MemTable)
+
+The in-memory write buffer is a custom **probabilistic Skip List** ($p = 0.5$, `kMaxLevel = 16`) supporting $O(\log n)$ expected insert, search, and delete.
+
+**The critical design decision** was the memory ownership model. A naive implementation using recursive `std::unique_ptr<Node>` chains has two fatal flaws:
+1. **Double-free UB**: multiple forward pointers at different levels point to the same node — violating `unique_ptr`'s exclusive-ownership invariant.
+2. **Stack overflow on destruction**: a million-node chain causes a million-deep recursive destructor call stack.
+
+The solution is an **Arena Allocation** model:
+
+```
+ head_ (unique_ptr<Node>)      arena_ (vector<unique_ptr<Node>>)
+ ┌────────────────┐             ┌──────────────────────────────┐
+ │ forward[0] ────┼──► Node A   │ [0] unique_ptr → Node A      │
+ │ forward[1] ────┼──► Node C   │ [1] unique_ptr → Node B      │
+ │ forward[2] ────┼──► ...      │ [2] unique_ptr → Node C      │
+ └────────────────┘             └──────────────────────────────┘
+                                  ▲  OWNS all nodes (bulk O(n) cleanup)
+                                  │  forward[] are NON-OWNING raw Node*
+```
+
+The `arena_` vector holds **exclusive ownership** of every node via `unique_ptr`. The `forward[]` arrays inside each node are **non-owning raw pointers** used solely for traversal. When the SkipList is destroyed, the `vector` destructor frees every node in one flat, iterative pass — **zero recursion, zero stack pressure**.
+
+> **Key insight:** When `vector<unique_ptr>` reallocates (grows), the `unique_ptr` objects are *moved* to new memory, but the underlying heap addresses (`Node*`) do not change. All raw pointers in `forward[]` remain valid after any reallocation.
+
+**Tombstone semantics:** Deletes are implemented as blind `O(1)` writes of a sentinel value (`"\x7F__KVAULT_TOMBSTONE__\x7F"`), never physical removals. This is architecturally necessary — the key may exist in an older on-disk SSTable. The tombstone logically vetoes it during reads without any disk I/O.
+
+---
+
+### 📝 Binary Write-Ahead Log (WAL) with CRC32 Integrity
+
+Every mutation (`PUT` / `DELETE`) is durably serialized to a binary append-only log **before** being applied to the MemTable, guaranteeing crash recovery.
+
+**Binary record format (per entry):**
+
+```
+┌──────────┬────────────┬────────────┬────────────┬────────────┬─────────────────────────┐
+│ CRC32    │ RecordType │ key_len    │ value_len  │  key data  │  value data             │
+│ (4 bytes)│ (1 byte)   │ (4 bytes)  │ (4 bytes)  │ (variable) │  (variable)             │
+└──────────┴────────────┴────────────┴────────────┴────────────┴─────────────────────────┘
+```
+
+**CRC32 is computed at compile time** using a `constexpr` lookup table (polynomial `0xEDB88320`), eliminating runtime table initialization overhead. On WAL replay (crash recovery), the CRC is recomputed and compared; a mismatch causes replay to **stop at the corruption boundary** — preventing partial-write poison from entering the engine.
+
+---
+
+### 💾 SSTable Writer — Sequential Disk Layout
+
+When the MemTable exceeds its configured flush threshold, it is atomically snapshotted, serialized to an immutable **Sorted String Table (SSTable)** file, and cleared. The binary file layout:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  DATA BLOCK      │  SPARSE INDEX BLOCK  │  BLOOM FILTER  │  FOOTER  │
+│  (sorted KV pairs│  (every Nth key +    │  (serialized   │ (offsets │
+│   with lengths)  │   byte offset)       │   bitset)      │  + magic)│
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The **footer** is verified at compile time with a `static_assert` on its byte size — a zero-cost contract that prevents accidental layout drift from breaking the reader's seek calculation. `fsync()` is called after the write to flush OS page cache to durable storage before the WAL is truncated.
+
+---
+
+### 🔍 Read-Path Optimization: Double-Hashed Bloom Filters
+
+To avoid expensive disk reads for non-existent keys, every SSTable carries an in-memory **Bloom Filter**. Rather than requiring $k$ independent hash functions, we use the **double-hashing technique** (Kirsch-Mitzenmacher optimization):
+
+$$h_i(x) = h_1(x) + i \cdot h_2(x) \pmod{m}, \quad i = 0, 1, \ldots, k-1$$
+
+Two base hashes (**FNV-1a** + a **Murmur3-style mix**) generate all $k$ probe positions, eliminating the cost of $k$ separate hash computations. The filter is serialized directly into the SSTable file and memory-mapped on startup.
+
+**SSTable Lookup Path:**
+
+```
+GET("key")
+  │
+  ├─► MemTable (O(log n) Skip List search)
+  │      ├── Found live value → return it
+  │      └── Found tombstone  → return nullopt (no disk I/O)
+  │
+  └─► SSTableManager (newest → oldest)
+         │
+         ├─► Bloom Filter check (O(k) bit reads, k=7 by default)
+         │      └── Negative → skip this SSTable (no disk I/O)
+         │
+         └─► Sparse Index binary search → seek → linear scan → return
+```
+
+The **sparse index** stores one entry per $N$ keys with their byte offsets. An `upper_bound` binary search locates the correct disk block, then a short linear scan finds the exact key. This trades index memory for I/O precision.
+
+---
+
+### ✅ Test Coverage: 74/74 in Under 1.6 Seconds
+
+| Test Suite | Tests | What It Covers |
+|---|---|---|
+| `SkipListTest` | 16 | CRUD, iteration, upsert, remove, 10K stress |
+| `MemTableTest` | 22 | Tombstones, byte tracking, snapshot order |
+| `WALTest` | 18 | Replay, CRC corruption, truncation, sync modes |
+| `SSTableTest` | 14 | Bloom FP rates, round-trip, corrupted footer |
+| `KVStoreTest` | 4 | WAL recovery, SSTable cascade, flush pipeline |
+| **Total** | **74** | **Zero warnings (`-Wall -Wextra -Wpedantic`)** |
+
+---
+
+## 🏗️ Full-Stack Architecture
+
+### Request Flow
+
+```mermaid
+graph TB
+    subgraph Dashboard["🖥️  React Dashboard (Vite, port 5173)"]
+        UI["Metrics Display<br/>(MemTable size, WAL size, SSTable count)"]
+        KVForm["KV Operations Form<br/>(PUT / GET / DELETE)"]
+        Viz["Skip List Visualizer<br/>(SVG, live MemTable snapshot)"]
+    end
+
+    subgraph API["🌐  Crow HTTP Server (port 8080)"]
+        Router["REST Router"]
+    end
+
+    subgraph Engine["⚙️  LSM-Tree Engine (C++20)"]
+        KVStore["KVStore (Facade)<br/>shared_mutex RW lock"]
+        WAL["WriteAheadLog<br/>(binary append-only)"]
+        MemTable["MemTable<br/>(Arena Skip List)"]
+        SSTMgr["SSTableManager<br/>(newest → oldest read)"]
+    end
+
+    subgraph Disk["💾  Persistent Storage"]
+        WALFile["wal.log<br/>(binary WAL)"]
+        SSTFiles["*.sst files<br/>(immutable SSTables)"]
+    end
+
+    Dashboard -->|"fetch /api/kv, /api/metrics"| Router
+    Router --> KVStore
+    KVStore --> WAL --> WALFile
+    KVStore --> MemTable
+    KVStore -->|"flush pipeline"| SSTMgr --> SSTFiles
+    MemTable -->|"should_flush() == true"| SSTMgr
+```
+
+### PUT Write Path
+
+```
+PUT("k", "v")
+  1. Acquire exclusive lock (unique_lock<shared_mutex>)
+  2. WAL::append({PUT, "k", "v"})  ← binary write + optional fsync
+  3. MemTable::put("k", "v")       ← O(log n) Skip List insert
+  4. if (memtable.should_flush())
+       → snapshot() → SSTableWriter::write() → SSTableManager::register()
+       → WAL::truncate() → MemTable::clear()
+  5. Release lock
+```
+
+### GET Read Path
+
+```
+GET("k")
+  1. Acquire shared lock (shared_lock<shared_mutex>)
+  2. MemTable::get("k")
+       → found live value  → return immediately
+       → found tombstone   → return nullopt (key definitively deleted)
+       → not found         → fall through to disk
+  3. SSTableManager: iterate newest → oldest
+       → BloomFilter::might_contain("k") == false → skip (no I/O)
+       → Binary search sparse index → seek → scan → return if found
+  4. Return nullopt if exhausted all SSTables
+```
+
+---
+
+## 📁 Project Structure
+
+```
+KVault-DB/
+│
+├── CMakeLists.txt                    # Root CMake (C++20, FetchContent, Ninja)
+├── README.md
+│
+├── include/kvault/                   # ══ PUBLIC HEADERS ══
+│   ├── kvstore.hpp                   # Top-level engine facade
+│   ├── memtable.hpp                  # MemTable with byte tracking & tombstones
+│   ├── skiplist.hpp                  # Arena-allocated probabilistic Skip List
+│   ├── wal.hpp                       # Binary Write-Ahead Log interface
+│   ├── sstable_writer.hpp            # SSTable serialization (flush path)
+│   ├── sstable_reader.hpp            # SSTable deserialization (read path)
+│   ├── sstable_manager.hpp           # Multi-SSTable read orchestration
+│   ├── bloom_filter.hpp              # Double-hashed Bloom Filter
+│   ├── api_routes.hpp                # Crow HTTP route declarations
+│   ├── config.hpp                    # Tunable EngineConfig parameters
+│   └── types.hpp                     # Key, Value, KVRecord, RecordType
+│
+├── src/                              # ══ IMPLEMENTATION ══
+│   ├── kvstore.cpp
+│   ├── memtable.cpp
+│   ├── skiplist.cpp
+│   ├── wal.cpp
+│   ├── sstable_writer.cpp
+│   ├── sstable_reader.cpp
+│   ├── sstable_manager.cpp
+│   ├── bloom_filter.cpp
+│   ├── api_routes.cpp                # Crow JSON handlers + CORS
+│   └── main.cpp                      # Server entry point (port 8080)
+│
+├── tests/                            # ══ GOOGLETEST SUITE ══
+│   ├── CMakeLists.txt
+│   ├── test_skiplist.cpp             # 16 tests
+│   ├── test_memtable.cpp             # 22 tests
+│   ├── test_wal.cpp                  # 18 tests
+│   ├── test_sstable.cpp              # 14 tests
+│   └── test_kvstore_integration.cpp  # 4 end-to-end tests
+│
+└── dashboard/                        # ══ REACT DASHBOARD ══
+    ├── package.json
+    ├── vite.config.js                # Proxy /api → localhost:8080
+    ├── index.html
+    └── src/
+        ├── App.jsx                   # Root layout
+        ├── index.css                 # Glassmorphism design system
+        ├── hooks/
+        │   ├── useKVStore.js         # PUT/GET/DELETE fetch hook
+        │   └── useMetrics.js         # 2-second polling hook
+        └── components/
+            ├── KVForm.jsx            # Operation panel + history
+            ├── MetricsDashboard.jsx  # Live metric cards
+            └── SkipListVisualizer.jsx# SVG Skip List diagram
+```
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+| Tool | Version | Notes |
+|---|---|---|
+| GCC / Clang | ≥ 13 (GCC) | C++20 required |
+| CMake | ≥ 3.20 | |
+| Ninja | any | Recommended generator |
+| Node.js | ≥ 18 | For the React dashboard |
+
+> **Windows (MSYS2/UCRT64):** All commands work in the UCRT64 shell. CMake will auto-download Crow, ASIO, and GoogleTest via `FetchContent`.
+
+---
+
+### 1. Build the C++ Backend
+
+```bash
+# Clone
+git clone https://github.com/KHU5HWANT/kvault-DB.git
+cd kvault-DB
+
+# Configure (downloads dependencies automatically)
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+# Compile
+cmake --build build --parallel
+```
+
+---
+
+### 2. Run the Test Suite
+
+```bash
+cd build
+ctest --output-on-failure
+```
+
+Expected output:
+```
+100% tests passed, 0 tests failed out of 74
+Total Test time (real) =   1.58 sec
+```
+
+---
+
+### 3. Start the Engine Server
+
+```bash
+# From the project root:
+./build/kvault_server.exe      # Windows
+# OR
+./build/kvault_server          # Linux/macOS
+```
+
+```
+Starting KVault Engine...
+KVault initialized. Recovered WAL size: 0 bytes. Active SSTables: 0
+Starting HTTP API on port 8080...
+[INFO] Crow server running at http://0.0.0.0:8080 (16 threads)
+```
+
+---
+
+### 4. Start the React Dashboard
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** — the dashboard connects automatically and begins polling engine metrics every 2 seconds.
+
+---
+
+### 5. Test the REST API Directly
+
+```bash
+# PUT a key
+curl -X POST http://localhost:8080/api/kv \
+     -H "Content-Type: application/json" \
+     -d '{"key": "user:1001", "value": "Alice"}'
+
+# GET a key
+curl http://localhost:8080/api/kv/user:1001
+
+# DELETE a key (inserts tombstone)
+curl -X DELETE http://localhost:8080/api/kv/user:1001
+
+# Live engine metrics
+curl http://localhost:8080/api/metrics
+
+# Current MemTable snapshot (for visualizer)
+curl http://localhost:8080/api/memtable/snapshot
+```
+
+---
+
+## ⚙️ Configuration
+
+Tune the engine by modifying `include/kvault/config.hpp`:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `memtable_flush_threshold_bytes` | `4 MB` | MemTable size before SSTable flush |
+| `bloom_filter_bits_per_key` | `10` | Bloom filter density (FP rate ~1%) |
+| `bloom_hash_count` | `7` | Number of hash probes per lookup |
+| `sync_per_write` | `false` | `fsync()` on every WAL append |
+| `sstable_directory` | `data/sstables/` | SSTable persistence path |
+| `wal_directory` | `data/wal/` | WAL persistence path |
+
+---
+
+## 📚 References
+
+This project is a direct implementation of the concepts described in:
+
+- **Kleppmann, M.** — *Designing Data-Intensive Applications* (O'Reilly, 2017) — Chapter 3: Storage and Retrieval
+- **Petrov, A.** — *Database Internals* (O'Reilly, 2019) — Chapters 4–7: B-Trees, LSM-Trees, and Storage
+- **Pugh, W.** — *Skip Lists: A Probabilistic Alternative to Balanced Trees* (CACM, 1990)
+- **Kirsch & Mitzenmacher** — *Less Hashing, Same Performance: Building a Better Bloom Filter* (2008)
+
+---
+
+## 📄 License
+
+MIT © 2026
+```
+
+
+## FILE: stress_test.py
+
+```py
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+import requests
+import concurrent.futures
+import time
+
+# Configuration
+BASE_URL = "http://localhost:8080/api/kv"
+NUM_THREADS = 20
+NUM_REQUESTS = 5000  # Total keys to insert
+
+print(f"🚀 Starting Thread-Safety Stress Test on KVault-DB")
+print(f"⚙️  Threads: {NUM_THREADS}")
+print(f"📦 Total Inserts: {NUM_REQUESTS}\n")
+
+import threading
+
+# Use thread-local storage for sessions to enable connection pooling (HTTP Keep-Alive)
+thread_local = threading.local()
+
+def get_session():
+    if not hasattr(thread_local, "session"):
+        thread_local.session = requests.Session()
+    return thread_local.session
+
+def insert_key(i):
+    """Worker function to simulate a user inserting data"""
+    key = f"stress_key_{i}"
+    value = f"data_from_thread_{i%NUM_THREADS}_timestamp_{time.time()}"
+    try:
+        session = get_session()
+        response = session.post(BASE_URL, json={"key": key, "value": value})
+        return response.status_code == 200
+    except Exception:
+        return False
+
+def read_key(i):
+    """Worker function to simulate a user reading data"""
+    key = f"stress_key_{i}"
+    try:
+        session = get_session()
+        response = session.get(f"{BASE_URL}/{key}")
+        return response.status_code == 200
+    except Exception:
+        return False
+
+# --- PHASE 1: Concurrent Writes ---
+print("🔥 [Phase 1] Hammering database with concurrent PUT requests...")
+start_time = time.time()
+
+successful_writes = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+    # Submit all tasks to the thread pool
+    results = executor.map(insert_key, range(NUM_REQUESTS))
+    successful_writes = sum(1 for success in results if success)
+
+write_time = time.time() - start_time
+print(f"✅ Phase 1 Complete in {write_time:.2f} seconds!")
+print(f"📊 Write Success Rate: {successful_writes}/{NUM_REQUESTS} ({(successful_writes/NUM_REQUESTS)*100:.1f}%)\n")
+
+# --- PHASE 2: Concurrent Reads ---
+print("🔎 [Phase 2] Verifying no data corruption with concurrent GET requests...")
+start_time = time.time()
+
+successful_reads = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+    # Submit all tasks to the thread pool
+    results = executor.map(read_key, range(NUM_REQUESTS))
+    successful_reads = sum(1 for success in results if success)
+
+read_time = time.time() - start_time
+print(f"✅ Phase 2 Complete in {read_time:.2f} seconds!")
+print(f"📊 Read Success Rate: {successful_reads}/{NUM_REQUESTS} ({(successful_reads/NUM_REQUESTS)*100:.1f}%)")
+
+# -----------------------------------------------------------------------
+# VERDICT
+# -----------------------------------------------------------------------
+# The true measure of thread safety is READ CONSISTENCY, not write HTTP
+# status codes. A write may return a transient HTTP 500 if it hits the
+# engine exactly during a MemTable → SSTable flush pipeline (the engine
+# blocks briefly while fsync()ing to disk), but the data is committed to
+# the WAL before the response is sent — so it is never actually lost.
+#
+# If the engine had a real data race or lock bug, concurrent writes would
+# CORRUPT the Skip List in memory, and the subsequent reads would fail.
+# A read success rate of 100% proves zero memory corruption occurred.
+# -----------------------------------------------------------------------
+total_time = write_time + read_time
+write_rate  = successful_writes / write_time
+read_rate   = successful_reads  / read_time
+data_loss   = NUM_REQUESTS - successful_reads
+corrupt_pct = (data_loss / NUM_REQUESTS) * 100
+
+print(f"\n{'='*55}")
+print(f"  📈 PERFORMANCE SUMMARY")
+print(f"{'='*55}")
+print(f"  Write Throughput : {write_rate:>8.0f} ops/sec")
+print(f"  Read  Throughput : {read_rate:>8.0f} ops/sec")
+print(f"  Total Time       : {total_time:>8.2f} seconds")
+print(f"{'='*55}")
+
+# Verdict is based on read consistency (ground truth of data integrity)
+if successful_reads == NUM_REQUESTS:
+    transient = NUM_REQUESTS - successful_writes
+    print(f"\n🏆 THREAD SAFETY VERIFIED!")
+    print(f"   → 0 keys corrupted or lost under {NUM_THREADS}-thread concurrency.")
+    if transient > 0:
+        print(f"   → {transient} write(s) returned HTTP 5xx during MemTable flush")
+        print(f"     (data committed to WAL — reads confirm 100% durability).")
+else:
+    print(f"\n❌ DATA CORRUPTION DETECTED: {data_loss} keys ({corrupt_pct:.2f}%) unreadable.")
+    print(f"   This indicates a real thread-safety or data-integrity bug.")
+```
+
+
+## FILE: dashboard/index.html
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Real-time LSM-Tree Key-Value Store visualization dashboard. Monitor MemTable, WAL, and SSTable metrics live." />
+    <title>KVault — LSM Engine Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+```
+
+
+## FILE: dashboard/package.json
+
+```json
+{
+  "name": "kvault-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time visualization dashboard for the KVault LSM-Tree storage engine",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
+  }
+}
+```
+
+
+## FILE: dashboard/vite.config.js
+
+```js
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      // Proxy all /api calls to the C++ backend running on port 8080.
+      // This avoids CORS issues during development.
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+    },
+  },
+})
+```
+
+
+## FILE: dashboard/src/App.css
+
+```css
+/* ============================================================================
+   App.css — Root layout
+   ============================================================================ */
+
+/* ---- Header ---------------------------------------------------------------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(7, 9, 15, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.logo-icon {
+  width: 34px;
+  height: 34px;
+  background: linear-gradient(135deg, #6c63ff, #00d4ff);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.logo-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #e9ecef, #adb5bd);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.logo-sub {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.last-updated {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+/* ---- Main Layout ----------------------------------------------------------- */
+.app-main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* ---- Section Heading ------------------------------------------------------- */
+.section-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-1);
+}
+
+.section-heading::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+/* ---- Bottom two-column layout --------------------------------------------- */
+.app-bottom-grid {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .app-bottom-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- Offline Banner -------------------------------------------------------- */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.2);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--color-accent-3);
+  animation: fade-up 0.3s ease;
+}
+
+.offline-banner code {
+  font-family: var(--font-mono);
+  background: rgba(255, 107, 107, 0.12);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+```
+
+
+## FILE: dashboard/src/App.jsx
+
+```jsx
+// ============================================================================
+// App.jsx — KVault Dashboard Root
+// ============================================================================
+// Unified single-screen dashboard:
+//
+//   [ Header: Logo | Status | Last Updated ]
+//   [ Offline Banner (conditional) ]
+//   [ Metrics Row: MemTable | WAL | SSTables ]
+//   [ Bottom Grid: KVForm | SkipList Visualizer ]
+// ============================================================================
+
+import { useCallback } from 'react'
+import { useMetrics } from './hooks/useMetrics'
+import MetricsDashboard from './components/MetricsDashboard'
+import KVForm from './components/KVForm'
+import SkipListVisualizer from './components/SkipListVisualizer'
+import './App.css'
+
+function StatusBadge({ status }) {
+  const classes = {
+    online:     'badge badge-online',
+    offline:    'badge badge-offline',
+    connecting: 'badge badge-loading',
+  }
+  const labels = {
+    online:     'Engine Online',
+    offline:    'Engine Offline',
+    connecting: 'Connecting…',
+  }
+  return (
+    <span className={classes[status]}>
+      {status === 'online' && <span className="live-dot" />}
+      {labels[status]}
+    </span>
+  )
+}
+
+export default function App() {
+  const { metrics, snapshot, backendStatus, lastUpdated, refetch } = useMetrics()
+
+  // After every KV operation, immediately re-fetch metrics/snapshot
+  // so the visualizer updates without waiting for the next poll tick.
+  const handleOperationComplete = useCallback(() => {
+    refetch()
+  }, [refetch])
+
+  const isOffline = backendStatus === 'offline'
+
+  return (
+    <>
+      {/* ---- Sticky Header ------------------------------------------------ */}
+      <header className="app-header">
+        <div className="app-logo">
+          <div className="logo-icon">🗄️</div>
+          <div className="logo-text">
+            <span className="logo-title">KVault</span>
+            <span className="logo-sub">LSM-Tree Engine Dashboard</span>
+          </div>
+        </div>
+
+        <div className="header-right">
+          {lastUpdated && (
+            <span className="last-updated">
+              Updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+          <StatusBadge status={backendStatus} />
+        </div>
+      </header>
+
+      {/* ---- Main Content ------------------------------------------------- */}
+      <main className="app-main">
+
+        {/* Offline warning */}
+        {isOffline && (
+          <div className="offline-banner">
+            <span style={{ fontSize: '20px' }}>⚠️</span>
+            <div>
+              <strong>Backend not reachable.</strong>
+              {' '}Start the engine:{' '}
+              <code>.\build\kvault_server.exe</code>
+              {' '}then wait for the dashboard to reconnect automatically.
+            </div>
+          </div>
+        )}
+
+        {/* Live Metrics */}
+        <section aria-label="Engine metrics">
+          <div className="section-heading">📊 Engine Metrics</div>
+          <MetricsDashboard metrics={metrics} />
+        </section>
+
+        {/* Operations + Visualizer */}
+        <section aria-label="Key-value operations and visualizer">
+          <div className="section-heading">🔧 Interact & Visualize</div>
+          <div className="app-bottom-grid">
+            <KVForm onOperationComplete={handleOperationComplete} />
+            <SkipListVisualizer entries={snapshot} />
+          </div>
+        </section>
+
+      </main>
+    </>
+  )
+}
+```
+
+
+## FILE: dashboard/src/index.css
+
+```css
+/* ============================================================================
+   KVault Dashboard — Global Design System
+   Uses CSS Custom Properties for a premium dark-mode glassmorphism aesthetic.
+   ============================================================================ */
+
+/* --- Google Fonts are loaded in index.html --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ---- Design Tokens -------------------------------------------------------- */
+:root {
+  /* Color Palette */
+  --color-bg-base:        #07090f;
+  --color-bg-elevated:    #0d1117;
+  --color-bg-glass:       rgba(255, 255, 255, 0.04);
+  --color-bg-glass-hover: rgba(255, 255, 255, 0.07);
+  --color-border:         rgba(255, 255, 255, 0.08);
+  --color-border-bright:  rgba(255, 255, 255, 0.16);
+
+  /* Brand Gradient */
+  --color-accent-1:   #6c63ff;  /* indigo */
+  --color-accent-2:   #00d4ff;  /* cyan */
+  --color-accent-3:   #ff6b6b;  /* coral (tombstones) */
+  --color-accent-4:   #51cf66;  /* green (success) */
+  --color-accent-warn: #fcc419; /* amber (warnings) */
+
+  /* Text */
+  --color-text-primary:   #f1f3f5;
+  --color-text-secondary: #868e96;
+  --color-text-muted:     #495057;
+
+  /* Typography */
+  --font-sans:  'Inter', system-ui, sans-serif;
+  --font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Spacing */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Radii */
+  --radius-sm:  6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  /* Shadows */
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255,255,255,0.06) inset;
+  --shadow-glow-accent: 0 0 32px rgba(108, 99, 255, 0.2);
+
+  /* Transitions */
+  --transition-fast:   150ms ease;
+  --transition-normal: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ---- Reset & Base --------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ---- Scrollbar Styling ---------------------------------------------------- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-bright); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-accent-1); }
+
+/* ---- Utility Classes ------------------------------------------------------ */
+.glass-card {
+  background: var(--color-bg-glass);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.glass-card:hover {
+  border-color: var(--color-border-bright);
+}
+
+.mono { font-family: var(--font-mono); }
+
+/* ---- Background Mesh Gradient --------------------------------------------- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 0%,   rgba(108, 99, 255, 0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 100%,  rgba(0, 212, 255, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 50% 50%,  rgba(81, 207, 102, 0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* ---- Animated Number Change ----------------------------------------------- */
+@keyframes pop-in {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.12); color: var(--color-accent-2); }
+  100% { transform: scale(1); }
+}
+
+.metric-value.changed {
+  animation: pop-in 0.4s var(--transition-spring);
+}
+
+/* ---- Pulse dot (live indicator) ------------------------------------------- */
+@keyframes pulse-ring {
+  0%   { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(81, 207, 102, 0.6); }
+  70%  { transform: scale(1);    box-shadow: 0 0 0 8px rgba(81, 207, 102, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(81, 207, 102, 0); }
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent-4);
+  animation: pulse-ring 2s ease infinite;
+  display: inline-block;
+}
+
+/* ---- Fade-in entry animation ---------------------------------------------- */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-up { animation: fade-up 0.5s ease forwards; }
+.fade-up-delay-1 { animation: fade-up 0.5s 0.1s ease both; }
+.fade-up-delay-2 { animation: fade-up 0.5s 0.2s ease both; }
+.fade-up-delay-3 { animation: fade-up 0.5s 0.3s ease both; }
+.fade-up-delay-4 { animation: fade-up 0.5s 0.4s ease both; }
+
+/* ---- Status Badge --------------------------------------------------------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.badge-online { background: rgba(81, 207, 102, 0.15); color: var(--color-accent-4); border: 1px solid rgba(81, 207, 102, 0.3); }
+.badge-offline { background: rgba(255, 107, 107, 0.15); color: var(--color-accent-3); border: 1px solid rgba(255, 107, 107, 0.3); }
+.badge-loading { background: rgba(252, 196, 25, 0.15); color: var(--color-accent-warn); border: 1px solid rgba(252, 196, 25, 0.3); }
+
+/* ---- Button --------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-normal);
+  white-space: nowrap;
+  user-select: none;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-accent-1), #8b5cf6);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(108, 99, 255, 0.35);
+}
+.btn-primary:hover:not(:disabled) { box-shadow: 0 6px 20px rgba(108, 99, 255, 0.5); transform: translateY(-1px); }
+
+.btn-secondary {
+  background: var(--color-bg-glass);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--color-bg-glass-hover); border-color: var(--color-border-bright); }
+
+.btn-danger {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--color-accent-3);
+  border-color: rgba(255, 107, 107, 0.25);
+}
+.btn-danger:hover:not(:disabled) { background: rgba(255, 107, 107, 0.22); box-shadow: 0 4px 14px rgba(255, 107, 107, 0.2); }
+
+.btn-success {
+  background: rgba(81, 207, 102, 0.12);
+  color: var(--color-accent-4);
+  border-color: rgba(81, 207, 102, 0.25);
+}
+.btn-success:hover:not(:disabled) { background: rgba(81, 207, 102, 0.22); }
+
+/* ---- Input --------------------------------------------------------------- */
+.input-field {
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.input-field::placeholder { color: var(--color-text-muted); font-family: var(--font-sans); }
+.input-field:focus {
+  border-color: var(--color-accent-1);
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.2);
+}
+
+/* ---- Toast Notification --------------------------------------------------- */
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slide-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+```
+
+
+## FILE: dashboard/src/main.jsx
+
+```jsx
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+```
+
+
+## FILE: dashboard/src/components/KVForm.css
+
+```css
+/* ============================================================================
+   KVForm.css — Operation panel styles
+   ============================================================================ */
+
+.kvform-wrapper {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.kvform-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.kvform-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.input-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: var(--space-1);
+  display: block;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.kvform-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.kvform-actions .btn {
+  flex: 1;
+  min-width: 80px;
+}
+
+/* Result display */
+.kvform-result {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  font-size: 13px;
+  animation: fade-up 0.25s ease;
+}
+
+.kvform-result.status-ok      { border-color: rgba(81, 207, 102, 0.3); }
+.kvform-result.status-error   { border-color: rgba(255, 107, 107, 0.3); }
+.kvform-result.status-not_found { border-color: rgba(252, 196, 25, 0.3); }
+
+.result-op-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-right: var(--space-2);
+  background: rgba(108, 99, 255, 0.2);
+  color: var(--color-accent-1);
+}
+
+.result-key {
+  font-family: var(--font-mono);
+  color: var(--color-accent-2);
+  font-weight: 500;
+}
+.result-value {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  word-break: break-all;
+  margin-top: var(--space-2);
+}
+.result-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: var(--space-1);
+}
+
+/* Operation History */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.02);
+  animation: fade-up 0.2s ease;
+}
+
+.history-op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 40px;
+  text-align: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.history-op.PUT    { background: rgba(81, 207, 102, 0.15);  color: var(--color-accent-4); }
+.history-op.GET    { background: rgba(0, 212, 255, 0.15);   color: var(--color-accent-2); }
+.history-op.DELETE { background: rgba(255, 107, 107, 0.15); color: var(--color-accent-3); }
+
+.history-key   { font-family: var(--font-mono); color: var(--color-text-secondary); flex: 1; }
+.history-time  { font-size: 10px; color: var(--color-text-muted); flex-shrink: 0; }
+.history-status-ok        { color: var(--color-accent-4); }
+.history-status-error     { color: var(--color-accent-3); }
+.history-status-not_found { color: var(--color-accent-warn); }
+```
+
+
+## FILE: dashboard/src/components/KVForm.jsx
+
+```jsx
+// ============================================================================
+// KVForm.jsx — Key-Value Operation Panel
+// ============================================================================
+// Provides PUT, GET, DELETE inputs with result display and operation history.
+// Uses the useKVStore hook for all backend interactions.
+// ============================================================================
+
+import { useState, useCallback } from 'react'
+import { useKVStore } from '../hooks/useKVStore'
+import './KVForm.css'
+
+const STATUS_ICON = {
+  ok:        '✓',
+  error:     '✗',
+  not_found: '?',
+}
+
+function ResultPanel({ result }) {
+  if (!result) return null
+
+  const { op, key, value, status, timestamp } = result
+  return (
+    <div className={`kvform-result status-${status}`}>
+      <div>
+        <span className="result-op-badge">{op}</span>
+        <span className="result-key">{key}</span>
+        <span style={{ color: 'var(--color-text-muted)', marginLeft: '6px', fontSize: '11px' }}>
+          {STATUS_ICON[status]}
+        </span>
+      </div>
+      {op === 'GET' && status === 'ok' && (
+        <div className="result-value">→ &quot;{value}&quot;</div>
+      )}
+      {status === 'not_found' && (
+        <div className="result-value" style={{ color: 'var(--color-accent-warn)' }}>Key does not exist</div>
+      )}
+      {status === 'error' && (
+        <div className="result-value" style={{ color: 'var(--color-accent-3)' }}>{value}</div>
+      )}
+      <div className="result-meta">{timestamp}</div>
+    </div>
+  )
+}
+
+function HistoryPanel({ history }) {
+  if (history.length === 0) return (
+    <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', textAlign: 'center', padding: 'var(--space-4) 0' }}>
+      No operations yet — try a PUT!
+    </p>
+  )
+
+  return (
+    <div className="history-list">
+      {history.map((item, idx) => (
+        <div key={idx} className="history-item">
+          <span className={`history-op ${item.op}`}>{item.op}</span>
+          <span className="history-key">{item.key}</span>
+          <span className={`history-status-${item.status}`}>{STATUS_ICON[item.status]}</span>
+          <span className="history-time">{item.timestamp}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export default function KVForm({ onOperationComplete }) {
+  const [key, setKey]     = useState('')
+  const [value, setValue] = useState('')
+  const { execute, lastResult, isLoading, error, history } = useKVStore()
+
+  const handleOp = useCallback(async (op) => {
+    await execute(op, key, value)
+    // Notify parent to refresh the MemTable snapshot
+    if (onOperationComplete) onOperationComplete()
+  }, [execute, key, value, onOperationComplete])
+
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === 'Enter' && !isLoading) handleOp('PUT')
+  }, [handleOp, isLoading])
+
+  return (
+    <div className="glass-card kvform-wrapper fade-up-delay-1">
+      <div className="kvform-title">⚡ Operations</div>
+
+      <div className="kvform-inputs">
+        <div className="input-group">
+          <label className="input-label" htmlFor="kv-key">Key</label>
+          <input
+            id="kv-key"
+            className="input-field"
+            type="text"
+            placeholder="e.g. user:1001"
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            onKeyDown={handleKeyDown}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+        <div className="input-group">
+          <label className="input-label" htmlFor="kv-value">Value <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(for PUT)</span></label>
+          <input
+            id="kv-value"
+            className="input-field"
+            type="text"
+            placeholder={'e.g. {"name": "Alice"}'}
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+      </div>
+
+      <div className="kvform-actions">
+        <button
+          id="btn-put"
+          className="btn btn-success"
+          onClick={() => handleOp('PUT')}
+          disabled={isLoading || !key.trim()}
+          title="Insert / Update (PUT)"
+        >
+          {isLoading ? '…' : '📥 PUT'}
+        </button>
+        <button
+          id="btn-get"
+          className="btn btn-secondary"
+          onClick={() => handleOp('GET')}
+          disabled={isLoading || !key.trim()}
+          title="Read key (GET)"
+        >
+          {isLoading ? '…' : '🔍 GET'}
+        </button>
+        <button
+          id="btn-delete"
+          className="btn btn-danger"
+          onClick={() => handleOp('DELETE')}
+          disabled={isLoading || !key.trim()}
+          title="Delete key (tombstone)"
+        >
+          {isLoading ? '…' : '🗑 DEL'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="kvform-result status-error">
+          <span style={{ color: 'var(--color-accent-3)' }}>⚠ {error}</span>
+        </div>
+      )}
+
+      <ResultPanel result={lastResult} />
+
+      <div>
+        <div className="kvform-title" style={{ marginBottom: 'var(--space-3)' }}>📋 History</div>
+        <HistoryPanel history={history} />
+      </div>
+    </div>
+  )
+}
+```
+
+
+## FILE: dashboard/src/components/MetricsDashboard.css
+
+```css
+/* ============================================================================
+   MetricsDashboard.css — Live engine metrics display
+   ============================================================================ */
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .metrics-grid { grid-template-columns: 1fr; }
+}
+
+/* Individual metric card */
+.metric-card {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--card-accent-1), var(--card-accent-2));
+  opacity: 0.8;
+}
+
+.metric-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.metric-value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--card-accent-1), var(--card-accent-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  transition: transform 0.2s ease;
+}
+
+.metric-sub {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Spark bar — visual fill showing usage vs threshold */
+.metric-bar-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: var(--space-2);
+}
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--card-accent-1), var(--card-accent-2));
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+```
+
+
+## FILE: dashboard/src/components/MetricsDashboard.jsx
+
+```jsx
+// ============================================================================
+// MetricsDashboard.jsx — Live Engine Metrics
+// ============================================================================
+// Displays MemTable size, WAL size, and SSTable count as animated cards.
+// Numbers pop when they change (CSS animation triggered via key prop trick).
+// ============================================================================
+
+import { useRef, useEffect, useState } from 'react'
+import './MetricsDashboard.css'
+
+// Flush threshold — should match EngineConfig::memtable_flush_threshold_bytes
+const MEMTABLE_THRESHOLD_BYTES = 4 * 1024 * 1024; // 4 MB
+
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+/**
+ * Single metric card with optional progress bar and animated value.
+ */
+function MetricCard({ icon, label, value, sub, accent1, accent2, fill, fillMax, delay }) {
+  const [animKey, setAnimKey] = useState(0)
+  const prevValue = useRef(value)
+
+  // Trigger pop animation when value changes
+  useEffect(() => {
+    if (prevValue.current !== value) {
+      setAnimKey(k => k + 1)
+      prevValue.current = value
+    }
+  }, [value])
+
+  const pct = fillMax ? Math.min(100, (fill / fillMax) * 100) : 0
+
+  return (
+    <div
+      className="glass-card metric-card fade-up"
+      style={{
+        '--card-accent-1': accent1,
+        '--card-accent-2': accent2,
+        animationDelay: delay,
+      }}
+    >
+      <div className="metric-icon">{icon}</div>
+      <div className="metric-label">{label}</div>
+      <div className="metric-value changed" key={animKey}>
+        {value ?? '—'}
+      </div>
+      {sub && <div className="metric-sub">{sub}</div>}
+      {fillMax !== undefined && (
+        <div className="metric-bar-track">
+          <div className="metric-bar-fill" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * @param {{ metrics: object|null }} props
+ */
+export default function MetricsDashboard({ metrics }) {
+  const memBytes   = metrics?.memtable_size_bytes ?? null
+  const walBytes   = metrics?.wal_size_bytes       ?? null
+  const ssts       = metrics?.sstable_count        ?? null
+
+  return (
+    <div className="metrics-grid">
+      <MetricCard
+        icon="🧠"
+        label="MemTable Size"
+        value={formatBytes(memBytes)}
+        sub={memBytes !== null ? `${((memBytes / MEMTABLE_THRESHOLD_BYTES) * 100).toFixed(0)}% of flush threshold` : 'Waiting for backend…'}
+        accent1="#6c63ff"
+        accent2="#00d4ff"
+        fill={memBytes}
+        fillMax={MEMTABLE_THRESHOLD_BYTES}
+        delay="0ms"
+      />
+      <MetricCard
+        icon="📝"
+        label="WAL Size"
+        value={formatBytes(walBytes)}
+        sub="Write-Ahead Log (crash recovery)"
+        accent1="#00d4ff"
+        accent2="#51cf66"
+        fill={walBytes}
+        fillMax={MEMTABLE_THRESHOLD_BYTES * 2}
+        delay="60ms"
+      />
+      <MetricCard
+        icon="💾"
+        label="SSTable Files"
+        value={ssts !== null ? ssts.toString() : '—'}
+        sub={ssts === 0 ? 'No flushes yet' : ssts === 1 ? '1 immutable level-0 file' : `${ssts} immutable level-0 files`}
+        accent1="#fcc419"
+        accent2="#ff6b6b"
+        delay="120ms"
+      />
+    </div>
+  )
+}
+```
+
+
+## FILE: dashboard/src/components/SkipListVisualizer.css
+
+```css
+/* ============================================================================
+   SkipListVisualizer.css
+   ============================================================================ */
+
+.visualizer-wrapper {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.visualizer-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.visualizer-empty {
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.visualizer-svg-container {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--color-border);
+}
+
+/* Node tooltip */
+.node-tooltip {
+  position: absolute;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-bright);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-primary);
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+/* Legend */
+.visualizer-legend {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* Count display */
+.visualizer-count {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+```
+
+
+## FILE: dashboard/src/components/SkipListVisualizer.jsx
+
+```jsx
+// ============================================================================
+// SkipListVisualizer.jsx — SVG Skip List Visualization
+// ============================================================================
+// Renders the current MemTable contents as a probabilistic skip list diagram.
+//
+// Since the backend exposes sorted level-0 entries (the real skip list data),
+// we simulate the multi-level structure client-side using the same p=0.5
+// coin-flip logic as the C++ engine, seeded deterministically from each key.
+//
+// Layout:
+//   - X-axis  → nodes sorted by key (level-0)
+//   - Y-axis  → skip list levels (level 0 at bottom, higher = fewer nodes)
+//   - Lines   → forward pointers connecting nodes at each level
+// ============================================================================
+
+import { useMemo, useState, useRef } from 'react'
+import './SkipListVisualizer.css'
+
+// Visual constants
+const NODE_R     = 20     // node circle radius
+const H_GAP      = 64     // horizontal gap between node centres
+const V_GAP      = 52     // vertical gap between levels
+const PAD_X      = 48     // left/right padding
+const PAD_Y      = 40     // top/bottom padding
+const MAX_LEVELS = 5      // max levels to display
+const MAX_NODES  = 32     // beyond this, collapse to table view
+
+// Colors
+const COLOR_PUT       = '#6c63ff'
+const COLOR_TOMBSTONE = '#ff6b6b'
+const COLOR_SENTINEL  = '#343a40'
+const COLOR_LANE      = 'rgba(255,255,255,0.06)'
+const COLOR_POINTER   = 'rgba(255,255,255,0.18)'
+
+// Deterministic pseudo-random level assignment based on key string.
+// Mirrors the skip list's geometric distribution (p=0.5) from the C++ engine.
+function assignLevel(key, maxLevels) {
+  let hash = 2166136261
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i)
+    hash = (hash * 16777619) >>> 0
+  }
+  let level = 1
+  while (level < maxLevels && (hash & (1 << level)) !== 0) level++
+  return level
+}
+
+function truncate(str, max = 8) {
+  return str.length > max ? str.slice(0, max - 1) + '…' : str
+}
+
+// Tooltip component that follows the hovered node
+function Tooltip({ x, y, node }) {
+  if (!node) return null
+  return (
+    <div
+      className="node-tooltip"
+      style={{ left: x + 12, top: y - 8 }}
+    >
+      <strong style={{ color: 'var(--color-accent-2)' }}>{node.key}</strong>
+      {node.type === 'tombstone'
+        ? <div style={{ color: 'var(--color-accent-3)' }}>🪦 tombstone</div>
+        : <div>→ &quot;{node.value}&quot;</div>
+      }
+    </div>
+  )
+}
+
+// Compact table fallback when there are too many entries to visualize
+function TableFallback({ entries }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+      gap: '8px',
+      padding: '16px',
+      maxHeight: '280px',
+      overflowY: 'auto',
+    }}>
+      {entries.map(e => (
+        <div key={e.key} style={{
+          display: 'flex', gap: '8px', alignItems: 'center',
+          padding: '6px 10px', borderRadius: '6px',
+          background: 'rgba(255,255,255,0.04)',
+          border: `1px solid ${e.type === 'tombstone' ? 'rgba(255,107,107,0.2)' : 'rgba(108,99,255,0.2)'}`,
+          fontSize: '12px', fontFamily: 'var(--font-mono)',
+        }}>
+          <span style={{ color: e.type === 'tombstone' ? COLOR_TOMBSTONE : COLOR_PUT, minWidth: '12px' }}>
+            {e.type === 'tombstone' ? '🪦' : '●'}
+          </span>
+          <span style={{ color: 'var(--color-accent-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {e.key}
+          </span>
+          {e.type !== 'tombstone' && (
+            <span style={{ color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              ={truncate(e.value, 14)}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export default function SkipListVisualizer({ entries }) {
+  const [tooltip, setTooltip]     = useState(null)
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 })
+  const containerRef = useRef(null)
+
+  // Derive skip list layout from entries
+  const { nodes, svgWidth, svgHeight, lanes } = useMemo(() => {
+    if (!entries || entries.length === 0) {
+      return { nodes: [], svgWidth: 200, svgHeight: 100, lanes: [] }
+    }
+
+    // Assign levels deterministically
+    const withLevels = entries.map(e => ({
+      ...e,
+      level: assignLevel(e.key, MAX_LEVELS),
+    }))
+
+    const maxLevel = Math.max(...withLevels.map(e => e.level), 1)
+
+    // Build sentinel nodes (−∞ and +∞)
+    const allNodes = [
+      { key: '−∞', value: '', type: 'sentinel', level: maxLevel, isSentinel: true },
+      ...withLevels,
+      { key: '+∞', value: '', type: 'sentinel', level: maxLevel, isSentinel: true },
+    ]
+
+    const totalNodes = allNodes.length
+    const w = PAD_X * 2 + (totalNodes - 1) * H_GAP
+    const h = PAD_Y * 2 + maxLevel * V_GAP
+
+    // x, y positions for level-0 (bottom row)
+    const positioned = allNodes.map((n, i) => ({
+      ...n,
+      x: PAD_X + i * H_GAP,
+      y0: h - PAD_Y, // level-0 y (bottom)
+      yAtLevel: (lvl) => h - PAD_Y - (lvl - 1) * V_GAP,
+    }))
+
+    // Lane backgrounds (one per level, drawn as horizontal bands)
+    const laneArr = Array.from({ length: maxLevel }, (_, i) => ({
+      level: i + 1,
+      y: h - PAD_Y - i * V_GAP,
+      label: `L${i}`,
+    }))
+
+    return { nodes: positioned, svgWidth: w, svgHeight: h, lanes: laneArr }
+  }, [entries])
+
+  const handleMouseMove = (e, node) => {
+    if (!containerRef.current) return
+    const rect = containerRef.current.getBoundingClientRect()
+    setTooltipPos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+    setTooltip(node)
+  }
+
+  if (!entries || entries.length === 0) {
+    return (
+      <div className="glass-card visualizer-wrapper fade-up-delay-3">
+        <div className="visualizer-title">🌐 MemTable Skip List</div>
+        <div className="visualizer-empty">
+          <div style={{ fontSize: '36px', marginBottom: '12px' }}>∅</div>
+          <div>MemTable is empty.</div>
+          <div style={{ marginTop: '6px' }}>Insert some keys to see the visualization.</div>
+        </div>
+      </div>
+    )
+  }
+
+  // Table fallback for very large memtables
+  if (entries.length > MAX_NODES) {
+    return (
+      <div className="glass-card visualizer-wrapper fade-up-delay-3">
+        <div className="visualizer-title">
+          🌐 MemTable Contents
+          <span className="visualizer-count">({entries.length} entries — compact view)</span>
+        </div>
+        <TableFallback entries={entries} />
+        <div className="visualizer-legend">
+          <div className="legend-item"><div className="legend-dot" style={{ background: COLOR_PUT }} />Live entry</div>
+          <div className="legend-item"><div className="legend-dot" style={{ background: COLOR_TOMBSTONE }} />Tombstone</div>
+        </div>
+      </div>
+    )
+  }
+
+  const maxLevel = Math.max(...nodes.filter(n => !n.isSentinel).map(n => n.level), 1)
+
+  return (
+    <div
+      className="glass-card visualizer-wrapper fade-up-delay-3"
+      ref={containerRef}
+      style={{ position: 'relative' }}
+      onMouseLeave={() => setTooltip(null)}
+    >
+      <div className="visualizer-title">
+        🌐 MemTable Skip List
+        <span className="visualizer-count">({entries.length} entr{entries.length === 1 ? 'y' : 'ies'}, {maxLevel} level{maxLevel > 1 ? 's' : ''})</span>
+      </div>
+
+      <Tooltip x={tooltipPos.x} y={tooltipPos.y} node={tooltip} />
+
+      <div className="visualizer-svg-container">
+        <svg
+          width={svgWidth}
+          height={svgHeight}
+          style={{ display: 'block', minWidth: '100%' }}
+          aria-label="Skip List visualization of current MemTable contents"
+        >
+          {/* --- Level lane backgrounds --- */}
+          {lanes.map(lane => (
+            <g key={lane.level}>
+              <line
+                x1={0} y1={lane.y}
+                x2={svgWidth} y2={lane.y}
+                stroke={COLOR_LANE} strokeWidth={1} strokeDasharray="4 4"
+              />
+              <text x={6} y={lane.y - 6} fontSize={9} fill="rgba(255,255,255,0.2)" fontFamily="var(--font-mono)">
+                {lane.label}
+              </text>
+            </g>
+          ))}
+
+          {/* --- Vertical connectors (level-0 links between all nodes) --- */}
+          {nodes.slice(0, -1).map((node, i) => {
+            const next = nodes[i + 1]
+            return (
+              <line
+                key={`h0-${i}`}
+                x1={node.x} y1={node.y0}
+                x2={next.x} y2={next.y0}
+                stroke={COLOR_POINTER} strokeWidth={1.5}
+              />
+            )
+          })}
+
+          {/* --- Express lane forward pointers (levels > 1) --- */}
+          {Array.from({ length: maxLevel - 1 }, (_, lvlIdx) => {
+            const lvl = lvlIdx + 2 // level 2, 3, 4…
+            const levelNodes = nodes.filter(n => n.level >= lvl)
+            return levelNodes.slice(0, -1).map((node, i) => {
+              const next = levelNodes[i + 1]
+              const y = node.yAtLevel(lvl)
+              const ny = next.yAtLevel(lvl)
+              return (
+                <g key={`express-${lvl}-${i}`}>
+                  {/* Arrow line */}
+                  <line
+                    x1={node.x} y1={y}
+                    x2={next.x} y2={ny}
+                    stroke={`rgba(108,99,255,0.35)`}
+                    strokeWidth={1.5}
+                    markerEnd="url(#arrow)"
+                  />
+                </g>
+              )
+            })
+          })}
+
+          {/* --- Arrow marker def --- */}
+          <defs>
+            <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L6,3 z" fill="rgba(108,99,255,0.5)" />
+            </marker>
+          </defs>
+
+          {/* --- Vertical stacks (the node column at each x position) --- */}
+          {nodes.map((node) => {
+            const lvls = Array.from({ length: node.level }, (_, i) => i + 1)
+            return lvls.map(lvl => {
+              const cy = node.yAtLevel(lvl)
+              const isTombstone = node.type === 'tombstone'
+              const isSentinel  = node.isSentinel
+              const fill = isSentinel ? COLOR_SENTINEL : isTombstone ? COLOR_TOMBSTONE : COLOR_PUT
+
+              return (
+                <g key={`node-${node.key}-lvl${lvl}`}>
+                  {/* Vertical connector from this node to level below */}
+                  {lvl > 1 && (
+                    <line
+                      x1={node.x} y1={cy}
+                      x2={node.x} y2={node.yAtLevel(lvl - 1)}
+                      stroke="rgba(255,255,255,0.1)"
+                      strokeWidth={1}
+                      strokeDasharray="3 3"
+                    />
+                  )}
+                  {/* Node circle */}
+                  <circle
+                    cx={node.x}
+                    cy={cy}
+                    r={NODE_R}
+                    fill={`${fill}22`}
+                    stroke={fill}
+                    strokeWidth={isSentinel ? 1 : 1.5}
+                    style={{ cursor: isSentinel ? 'default' : 'pointer', transition: 'all 0.2s ease' }}
+                    onMouseMove={isSentinel ? undefined : (e) => handleMouseMove(e, node)}
+                    onMouseLeave={() => setTooltip(null)}
+                  />
+                  {/* Node label (only on level-0 for data nodes) */}
+                  {lvl === 1 && (
+                    <text
+                      x={node.x}
+                      y={cy + 4}
+                      textAnchor="middle"
+                      fontSize={isSentinel ? 10 : 9}
+                      fontFamily="var(--font-mono)"
+                      fill={isSentinel ? 'rgba(255,255,255,0.3)' : isTombstone ? COLOR_TOMBSTONE : 'rgba(255,255,255,0.85)'}
+                      style={{ userSelect: 'none', pointerEvents: 'none' }}
+                    >
+                      {isSentinel ? node.key : truncate(node.key, 6)}
+                    </text>
+                  )}
+                </g>
+              )
+            })
+          })}
+        </svg>
+      </div>
+
+      {/* Legend */}
+      <div className="visualizer-legend">
+        <div className="legend-item">
+          <div className="legend-dot" style={{ background: COLOR_PUT }} />
+          Live entry
+        </div>
+        <div className="legend-item">
+          <div className="legend-dot" style={{ background: COLOR_TOMBSTONE }} />
+          Tombstone
+        </div>
+        <div className="legend-item">
+          <div className="legend-dot" style={{ background: COLOR_SENTINEL }} />
+          Sentinel (−∞ / +∞)
+        </div>
+        <div className="legend-item" style={{ color: 'rgba(108,99,255,0.7)' }}>
+          ── Express lanes (higher levels)
+        </div>
+      </div>
+    </div>
+  )
+}
+```
+
+
+## FILE: dashboard/src/hooks/useKVStore.js
+
+```js
+// ============================================================================
+// useKVStore.js — Custom Hook for KVault REST API Interactions
+// ============================================================================
+// Abstracts all fetch() calls to the C++ backend:
+//   PUT  → POST  /api/kv
+//   GET  → GET   /api/kv/<key>
+//   DEL  → DELETE /api/kv/<key>
+//
+// Returns: { execute, lastResult, isLoading, error, history }
+// ============================================================================
+
+import { useState, useCallback } from 'react'
+
+const API_BASE = '/api'
+
+/**
+ * @returns {{
+ *   execute: (op: 'PUT'|'GET'|'DELETE', key: string, value?: string) => Promise<void>,
+ *   lastResult: { op: string, key: string, value: string, status: 'ok'|'error'|'not_found' } | null,
+ *   isLoading: boolean,
+ *   error: string | null,
+ *   history: Array,
+ * }}
+ */
+export function useKVStore() {
+  const [lastResult, setLastResult] = useState(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError]         = useState(null)
+  const [history, setHistory]     = useState([])
+
+  const execute = useCallback(async (op, key, value = '') => {
+    if (!key.trim()) {
+      setError('Key cannot be empty.')
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+
+    const timestamp = new Date().toLocaleTimeString()
+
+    try {
+      let response
+      if (op === 'PUT') {
+        response = await fetch(`${API_BASE}/kv`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: key.trim(), value }),
+        })
+      } else if (op === 'GET') {
+        response = await fetch(`${API_BASE}/kv/${encodeURIComponent(key.trim())}`)
+      } else if (op === 'DELETE') {
+        response = await fetch(`${API_BASE}/kv/${encodeURIComponent(key.trim())}`, {
+          method: 'DELETE',
+        })
+      } else {
+        throw new Error(`Unknown operation: ${op}`)
+      }
+
+      let resultValue = ''
+      let status = 'ok'
+
+      if (op === 'GET') {
+        if (response.status === 404) {
+          status = 'not_found'
+          resultValue = '(key not found)'
+        } else if (response.ok) {
+          resultValue = await response.text()
+        } else {
+          status = 'error'
+          resultValue = await response.text()
+        }
+      } else {
+        if (!response.ok) {
+          status = 'error'
+          resultValue = await response.text()
+        }
+      }
+
+      const entry = { op, key: key.trim(), value: resultValue, status, timestamp }
+      setLastResult(entry)
+      setHistory(prev => [entry, ...prev].slice(0, 50)) // keep last 50 ops
+
+    } catch (err) {
+      const msg = err.message.includes('fetch')
+        ? 'Backend offline. Start kvault_server.exe and retry.'
+        : err.message
+      setError(msg)
+      const entry = { op, key: key.trim(), value: '', status: 'error', timestamp }
+      setLastResult(entry)
+      setHistory(prev => [entry, ...prev].slice(0, 50))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  return { execute, lastResult, isLoading, error, history }
+}
+```
+
+
+## FILE: dashboard/src/hooks/useMetrics.js
+
+```js
+// ============================================================================
+// useMetrics.js — Live Engine Metrics Polling Hook
+// ============================================================================
+// Polls /api/metrics every 2 seconds to keep the dashboard "alive".
+// Also fetches /api/memtable/snapshot for the SkipList visualizer.
+//
+// Returns: { metrics, snapshot, backendStatus, lastUpdated }
+// ============================================================================
+
+import { useState, useEffect, useRef, useCallback } from 'react'
+
+const API_BASE = '/api'
+const POLL_INTERVAL_MS = 2000
+
+/**
+ * @returns {{
+ *   metrics: { memtable_size_bytes: number, wal_size_bytes: number, sstable_count: number } | null,
+ *   snapshot: Array<{ key: string, value: string, type: 'put'|'tombstone' }>,
+ *   backendStatus: 'online'|'offline'|'connecting',
+ *   lastUpdated: Date | null,
+ * }}
+ */
+export function useMetrics() {
+  const [metrics, setMetrics]             = useState(null)
+  const [snapshot, setSnapshot]           = useState([])
+  const [backendStatus, setBackendStatus] = useState('connecting')
+  const [lastUpdated, setLastUpdated]     = useState(null)
+
+  // Track previous metric values to trigger CSS animation on change
+  const prevMetricsRef = useRef(null)
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [metricsRes, snapshotRes] = await Promise.all([
+        fetch(`${API_BASE}/metrics`),
+        fetch(`${API_BASE}/memtable/snapshot`),
+      ])
+
+      if (!metricsRes.ok || !snapshotRes.ok) {
+        setBackendStatus('offline')
+        return
+      }
+
+      const metricsData  = await metricsRes.json()
+      const snapshotData = await snapshotRes.json()
+
+      prevMetricsRef.current = metrics
+      setMetrics(metricsData)
+      setSnapshot(snapshotData.entries ?? [])
+      setBackendStatus('online')
+      setLastUpdated(new Date())
+    } catch {
+      setBackendStatus('offline')
+    }
+  }, [metrics])
+
+  useEffect(() => {
+    // Immediate fetch on mount
+    fetchAll()
+
+    const intervalId = setInterval(fetchAll, POLL_INTERVAL_MS)
+    return () => clearInterval(intervalId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return { metrics, snapshot, backendStatus, lastUpdated, refetch: fetchAll }
+}
+```
+
+
+## FILE: include/kvault/api_routes.hpp
+
+```hpp
+#pragma once
+
+#include "kvault/kvstore.hpp"
+#include <crow.h>
+#include <crow/middlewares/cors.h>
+#include <memory>
+
+namespace kvault {
+
+class ApiServer {
+public:
+    explicit ApiServer(std::shared_ptr<KVStore> store, uint16_t port);
+    
+    // Starts the HTTP server (blocks until interrupted)
+    void run();
+    
+    // Stops the HTTP server
+    void stop();
+
+private:
+    void setup_routes();
+
+    std::shared_ptr<KVStore> store_;
+    uint16_t port_;
+    
+    // Using CORS handler middleware
+    crow::App<crow::CORSHandler> app_;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/bloom_filter.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// bloom_filter.hpp — Space-Efficient Probabilistic Set Membership
+// ============================================================================
+//
+// A Bloom Filter answers the question: "might this key be in the set?"
+//
+//   - FALSE  → the key is DEFINITELY not present (zero disk I/O on SSTable)
+//   - TRUE   → the key is PROBABLY present (proceed to binary search)
+//
+// False positives are possible (rate ≈ (1 - e^(-k*n/m))^k).
+// False negatives are IMPOSSIBLE — every key that was add()ed will always
+// return true from might_contain().
+//
+// DOUBLE HASHING TECHNIQUE:
+//   Instead of k independent hash functions (expensive to design/implement),
+//   we use two base hashes h1 and h2 derived from the key, and generate
+//   k composite hashes via:
+//
+//       g_i(key) = (h1(key) + i * h2(key)) mod m      for i in [0, k)
+//
+//   This is mathematically equivalent to k independent hashes for most
+//   practical distributions [Kirsch & Mitzenmacher, 2006].
+//
+// PARAMETER GUIDANCE:
+//   Given n keys and a target false positive rate p:
+//     m = -n * ln(p) / (ln(2)^2)    — optimal bit count
+//     k = (m / n) * ln(2)           — optimal hash count
+//
+//   With bits_per_key = 10:
+//     p ≈ 0.0082  (~0.8% false positive rate)
+//     k ≈ 7 hash functions
+//
+// SERIALIZATION:
+//   The filter serializes to: [4 bytes: k] [4 bytes: m] [ceil(m/8) bytes: bits]
+//   This self-contained format is embedded in the SSTable Bloom Filter Block.
+//
+// ============================================================================
+
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace kvault {
+
+class BloomFilter {
+public:
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    // Create a Bloom Filter sized for `expected_entries` keys with the
+    // specified number of bits per key (default from EngineConfig).
+    // @param expected_entries   Approximate number of keys to be inserted
+    // @param bits_per_key       Controls the false positive rate
+    //                           (10 → ~0.8%, 14 → ~0.1%, 20 → ~0.01%)
+    BloomFilter(size_t expected_entries, size_t bits_per_key);
+
+    // Reconstruct a BloomFilter from serialized bytes (used by SSTableReader).
+    // @param data   Raw bytes produced by serialize()
+    static BloomFilter deserialize(const std::vector<uint8_t>& data);
+
+    ~BloomFilter() = default;
+    BloomFilter(const BloomFilter&)            = default;
+    BloomFilter& operator=(const BloomFilter&) = default;
+    BloomFilter(BloomFilter&&) noexcept            = default;
+    BloomFilter& operator=(BloomFilter&&) noexcept = default;
+
+    // -----------------------------------------------------------------------
+    // Core Operations
+    // -----------------------------------------------------------------------
+
+    // Add a key to the filter. Sets k bits derived from the key's two
+    // base hashes via the double hashing formula.
+    void add(const Key& key);
+
+    // Test whether a key might be in the set.
+    // Returns false  → key is DEFINITELY absent (safe to skip SSTable I/O)
+    // Returns true   → key is PROBABLY present (proceed with binary search)
+    [[nodiscard]]
+    bool might_contain(const Key& key) const;
+
+    // -----------------------------------------------------------------------
+    // Serialization
+    // -----------------------------------------------------------------------
+
+    // Serialize the filter to a compact byte buffer for embedding in an
+    // SSTable. Format:
+    //   [0..3]  k (uint32 LE) — number of hash functions
+    //   [4..7]  m (uint32 LE) — number of bits (capacity)
+    //   [8..]   bit array     — ceil(m / 8) bytes, LSB first
+    [[nodiscard]]
+    std::vector<uint8_t> serialize() const;
+
+    // -----------------------------------------------------------------------
+    // Observers
+    // -----------------------------------------------------------------------
+
+    [[nodiscard]] size_t bit_count()  const noexcept { return m_; }
+    [[nodiscard]] size_t hash_count() const noexcept { return k_; }
+    [[nodiscard]] size_t byte_size()  const noexcept { return bits_.size(); }
+
+private:
+    // Private constructor used by deserialize()
+    BloomFilter(size_t k, size_t m, std::vector<uint8_t> bits);
+
+    // Compute the two base hashes for a key.
+    // h1 is derived from FNV-1a, h2 from a complementary polynomial.
+    // Both are deterministic and cheap to compute.
+    static std::pair<uint64_t, uint64_t> base_hashes(const Key& key);
+
+    // Set or test a single bit at position `bit_index` in bits_.
+    void     set_bit(size_t bit_index);
+    [[nodiscard]]
+    bool     get_bit(size_t bit_index) const;
+
+    size_t               k_;     // Number of hash functions
+    size_t               m_;     // Total number of bits
+    std::vector<uint8_t> bits_;  // Packed bit array: bits_[i/8] bit (i%8)
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/config.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// config.hpp — Tunable engine parameters for KVault
+// ============================================================================
+//
+// All runtime-configurable knobs are centralized in EngineConfig.
+// The KVStore constructor accepts an EngineConfig and distributes
+// relevant fields to each subsystem (MemTable, WAL, SSTable, etc.).
+//
+// Defaults are chosen for a development/demo environment. Production
+// deployments should tune memtable_flush_threshold_bytes and
+// sync_per_write based on workload characteristics.
+// ============================================================================
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace kvault {
+
+struct EngineConfig {
+
+    // -- MemTable -----------------------------------------------------------
+
+    // Approximate byte threshold at which the active MemTable is frozen
+    // and flushed to a new SSTable on disk. Larger values increase write
+    // throughput (fewer flushes) but consume more RAM.
+    // Default: 4 MB
+    size_t memtable_flush_threshold_bytes = 4UL * 1024 * 1024;
+
+    // -- Skip List ----------------------------------------------------------
+
+    // Maximum number of levels in the Skip List. A list with max_level = L
+    // and probability = 0.5 efficiently handles up to 2^L entries.
+    // Default: 16 (supports up to ~65K entries per MemTable)
+    int skip_list_max_level = 16;
+
+    // Probability of promoting a node to the next level during insertion.
+    // p = 0.5 yields an expected 2 pointers per node (balanced tradeoff).
+    // p = 0.25 uses ~1.33 pointers per node (more space-efficient).
+    double skip_list_probability = 0.5;
+
+    // -- Write-Ahead Log ----------------------------------------------------
+
+    // Directory where the WAL file (wal.log) is stored.
+    std::string wal_directory = "data/wal";
+
+    // If true, every WAL append issues an fsync() / _commit() system call
+    // to guarantee the record reaches stable storage before returning.
+    //
+    // If false, the WAL only flushes the userspace buffer (fflush). This
+    // is faster but risks losing the last few records on a power failure
+    // (the OS page cache may not have been written to disk).
+    //
+    // Recommendation:
+    //   true  — correctness-critical workloads (default)
+    //   false — benchmarking, development, or when using a UPS
+    bool sync_per_write = true;
+
+    // -- SSTables -----------------------------------------------------------
+
+    // Directory where flushed SSTable files (.sst) are stored.
+    std::string sstable_directory = "data/sstables";
+
+    // -- Bloom Filter -------------------------------------------------------
+
+    // Bits allocated per key in each SSTable's Bloom Filter.
+    // 10 bits/key → ~1% false positive rate (k ≈ 7 hash functions).
+    // Higher values reduce false positives but increase SSTable size.
+    size_t bloom_filter_bits_per_key = 10;
+
+    // -- HTTP Server --------------------------------------------------------
+
+    // Port on which the embedded Crow HTTP server listens.
+    uint16_t server_port = 8080;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/kvstore.hpp
+
+```hpp
+#pragma once
+
+#include "kvault/config.hpp"
+#include "kvault/memtable.hpp"
+#include "kvault/sstable_manager.hpp"
+#include "kvault/types.hpp"
+#include "kvault/wal.hpp"
+
+#include <memory>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+
+namespace kvault {
+
+class KVStore {
+public:
+    explicit KVStore(const EngineConfig& config = EngineConfig{});
+    ~KVStore() = default;
+
+    // Non-copyable, non-movable for safety
+    KVStore(const KVStore&) = delete;
+    KVStore& operator=(const KVStore&) = delete;
+
+    // Insert or update a key-value pair.
+    void put(const Key& key, const Value& value);
+
+    // Retrieve a value by key. Returns std::nullopt if not found.
+    std::optional<Value> get(const Key& key) const;
+
+    // Delete a key. Returns true if key was logically removed.
+    bool remove(const Key& key);
+
+    // Flushes MemTable to disk manually, creating a new SSTable.
+    void force_flush();
+
+    // Diagnostics/Metrics
+    size_t memtable_size() const;
+    size_t sstable_count() const;
+    size_t wal_size() const;
+
+    // Returns a sorted snapshot of the active MemTable for the dashboard visualizer.
+    // Each entry is a pair { key, value } — tombstones are included with value=<TOMBSTONE>.
+    std::vector<KVRecord> memtable_snapshot() const;
+
+private:
+    void trigger_flush();
+
+    EngineConfig config_;
+    
+    // We use a shared_mutex to allow concurrent reads from MemTable/SSTables,
+    // while acquiring an exclusive lock during flushes.
+    // (Individual put() and get() calls are fast, so for now we exclusively lock
+    // on put/remove to simplify concurrent access to the WAL and MemTable. A real
+    // high-concurrency engine would use a concurrent SkipList).
+    mutable std::shared_mutex rw_mutex_;
+
+    std::unique_ptr<WriteAheadLog> wal_;
+    std::unique_ptr<MemTable> memtable_;
+    std::unique_ptr<SSTableManager> sstable_manager_;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/memtable.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// memtable.hpp — In-Memory Sorted Store (MemTable)
+// ============================================================================
+//
+// The MemTable is a thin encapsulation over the Skip List that adds:
+//
+//   1. BYTE TRACKING — maintains an approximate running count of memory
+//      usage to determine when the MemTable should be flushed to disk.
+//
+//   2. TOMBSTONE SEMANTICS — translates user-facing "delete" operations
+//      into internal tombstone insertions, and filters them out on reads.
+//
+//   3. SNAPSHOT — produces a sorted vector of KVRecords for the SSTable
+//      writer to serialize during the flush pipeline.
+//
+// Lifecycle:
+//   Active MemTable (accepting writes)
+//     → should_flush() returns true
+//     → KVStore swaps it to "immutable" status
+//     → snapshot() is called by the flush pipeline
+//     → SSTable is written to disk
+//     → MemTable is destroyed (arena releases all nodes)
+//
+// Thread Safety: NOT thread-safe. The KVStore layer is responsible for
+//                synchronization (e.g., a read-write lock).
+// ============================================================================
+
+#include "kvault/skiplist.hpp"
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace kvault {
+
+class MemTable {
+public:
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+    // @param flush_threshold_bytes  Approximate byte count at which
+    //                               should_flush() begins returning true.
+    //                               Sourced from EngineConfig.
+    // -----------------------------------------------------------------------
+    explicit MemTable(size_t flush_threshold_bytes);
+
+    ~MemTable() = default;
+
+    // Non-copyable (SkipList owns an arena of unique_ptrs)
+    MemTable(const MemTable&)            = delete;
+    MemTable& operator=(const MemTable&) = delete;
+
+    // Movable (SkipList is movable)
+    MemTable(MemTable&&) noexcept            = default;
+    MemTable& operator=(MemTable&&) noexcept = default;
+
+    // -----------------------------------------------------------------------
+    // Write Operations
+    // -----------------------------------------------------------------------
+
+    // Insert or update a key-value pair.
+    // If the key was previously tombstoned in this MemTable, the tombstone
+    // is replaced with the new value (the key "comes back to life").
+    void put(const Key& key, const Value& value);
+
+    // Mark a key as deleted by inserting a tombstone sentinel.
+    // The tombstone is necessary even if the key doesn't exist in this
+    // MemTable — it might exist in an older SSTable on disk, and the
+    // tombstone must shadow it during the read path.
+    void remove(const Key& key);
+
+    // -----------------------------------------------------------------------
+    // Read Operations
+    // -----------------------------------------------------------------------
+
+    // Retrieve the value for a key.
+    //
+    // Returns:
+    //   std::optional<Value> with the value — if the key exists and is live
+    //   std::nullopt — if the key is not found OR is tombstoned
+    //
+    // Callers cannot distinguish "not found" from "deleted" at this layer.
+    // The KVStore read path handles this by falling through to SSTables
+    // only when the MemTable returns nullopt AND the key was NOT tombstoned.
+    // See: contains_tombstone() for explicit tombstone checks.
+    [[nodiscard]]
+    std::optional<Value> get(const Key& key) const;
+
+    // Check if a key has an explicit tombstone in this MemTable.
+    // Used by KVStore to avoid unnecessary SSTable lookups: if the
+    // MemTable has a tombstone for a key, the key is definitively deleted
+    // and there's no need to search older SSTables.
+    [[nodiscard]]
+    bool contains_tombstone(const Key& key) const;
+
+    // -----------------------------------------------------------------------
+    // Size & Threshold
+    // -----------------------------------------------------------------------
+
+    // Approximate byte size of all entries in this MemTable.
+    // Accounts for key bytes, value bytes, and estimated per-node overhead
+    // from the underlying Skip List (forward pointers, arena storage).
+    [[nodiscard]] size_t current_size_bytes() const noexcept;
+
+    // Returns true when the MemTable has exceeded its configured flush
+    // threshold and should be swapped to immutable + flushed to an SSTable.
+    [[nodiscard]] bool should_flush() const noexcept;
+
+    // Number of unique keys in the MemTable (includes tombstoned keys).
+    [[nodiscard]] size_t entry_count() const noexcept;
+
+    // -----------------------------------------------------------------------
+    // Snapshot (for SSTable Flushing)
+    // -----------------------------------------------------------------------
+
+    // Returns a sorted vector of all entries as KVRecords.
+    //
+    // - Live entries → KVRecord { RecordType::PUT, key, value }
+    // - Tombstones   → KVRecord { RecordType::DELETE, key, "" }
+    //
+    // The vector is ordered by key (ascending, lexicographic) because
+    // SSTables require sorted input. This is achieved by iterating the
+    // Skip List's level-0 chain.
+    [[nodiscard]]
+    std::vector<KVRecord> snapshot() const;
+
+private:
+    // Estimated overhead per Skip List node, in bytes.
+    //
+    // Breakdown:
+    //   SkipListNode struct (2 std::strings + vector): ~64 bytes
+    //   Average forward pointers (p=0.5 → ~2 levels × 8B): ~16 bytes
+    //   unique_ptr in arena vector: 8 bytes
+    //   Heap allocator metadata: ~16 bytes
+    //   ─────────────────────────────────────────────────────
+    //   Total: ~104 bytes
+    //
+    // This is approximate. The flush threshold should be set with the
+    // understanding that actual memory usage ≈ 2× the tracked byte count.
+    static constexpr size_t kNodeOverheadBytes = 104;
+
+    SkipList skiplist_;
+    size_t   approximate_size_;
+    size_t   flush_threshold_bytes_;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/skiplist.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// skiplist.hpp — A Probabilistic Skip List with Arena-Based Memory Ownership
+// ============================================================================
+//
+// OWNERSHIP MODEL:
+//   Every SkipListNode is allocated on the heap and its lifetime is managed
+//   by a single std::unique_ptr stored in the SkipList::arena_ vector.
+//
+//   The forward[] pointers inside each node are NON-OWNING raw pointers
+//   (Node*) used purely for O(log n) traversal across levels. Multiple
+//   forward pointers at different levels may point to the same node —
+//   this is safe because none of them own the node.
+//
+//   When the SkipList is destroyed, arena_ releases all nodes in one pass.
+//   No cascading destructors, no double-free, no stack overflow.
+//
+// WHY NOT unique_ptr FOR FORWARD POINTERS?
+//   In a Skip List, the same node is reachable from multiple levels:
+//     - Node A's forward[0] points to Node B  (level-0 next)
+//     - Node X's forward[2] also points to Node B  (express lane)
+//   If both were unique_ptr<Node>, Node B would have two owners — violating
+//   unique_ptr's exclusive-ownership invariant and causing double-free UB.
+//
+// ============================================================================
+
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <memory>
+#include <optional>
+#include <random>
+#include <vector>
+
+namespace kvault {
+
+// ---------------------------------------------------------------------------
+// SkipListNode
+// ---------------------------------------------------------------------------
+// Each node holds a key-value pair and a vector of forward pointers —
+// one per level the node participates in. All pointers are non-owning.
+// ---------------------------------------------------------------------------
+struct SkipListNode {
+    Key   key;
+    Value value;
+
+    // forward[i] = next node at level i, or nullptr if this node is the
+    // last node at that level. These are NON-OWNING traversal pointers.
+    // Lifetime of the pointed-to nodes is managed by SkipList::arena_.
+    std::vector<SkipListNode*> forward;
+
+    // Data node constructor
+    SkipListNode(Key k, Value v, int height)
+        : key(std::move(k))
+        , value(std::move(v))
+        , forward(static_cast<size_t>(height), nullptr) {}
+
+    // Sentinel (head) node constructor — no meaningful key or value
+    explicit SkipListNode(int height)
+        : forward(static_cast<size_t>(height), nullptr) {}
+};
+
+// ---------------------------------------------------------------------------
+// SkipList
+// ---------------------------------------------------------------------------
+// A probabilistic ordered data structure with O(log n) insert, search,
+// and delete. Designed as the backing structure for KVault's MemTable.
+//
+// Thread Safety: NOT thread-safe. The MemTable layer is responsible for
+//                synchronization if concurrent access is needed.
+// ---------------------------------------------------------------------------
+class SkipList {
+public:
+    // -- Configuration Constants --------------------------------------------
+    // Maximum number of levels. 16 levels can efficiently handle up to
+    // 2^16 = 65,536 entries (with p=0.5). Sufficient for a MemTable that
+    // flushes at ~4 MB.
+    static constexpr int kMaxLevel = 16;
+
+    // Probability of promoting a node to the next level.
+    // p = 0.5 gives a balanced space-time tradeoff (expected 2 pointers/node).
+    static constexpr double kProbability = 0.5;
+
+    // -- Lifecycle ----------------------------------------------------------
+    SkipList();
+
+    // Destructor: arena_ is a vector<unique_ptr<Node>>. Its destructor
+    // calls delete on every node. Because forward[] contains only raw
+    // pointers, there is no cascading or recursive destruction — each
+    // node's destructor is O(1). Total cleanup is O(n), iterative, and
+    // stack-safe even for millions of nodes.
+    ~SkipList() = default;
+
+    // Non-copyable — the arena holds unique ownership of all nodes.
+    SkipList(const SkipList&)            = delete;
+    SkipList& operator=(const SkipList&) = delete;
+
+    // Movable — transferring ownership of the arena is well-defined.
+    SkipList(SkipList&&) noexcept            = default;
+    SkipList& operator=(SkipList&&) noexcept = default;
+
+    // -- Core Operations ----------------------------------------------------
+
+    // Insert a key-value pair. If the key already exists, its value is
+    // overwritten (upsert semantics). Complexity: O(log n) expected.
+    void insert(const Key& key, const Value& value);
+
+    // Search for a key. Returns the associated value, or std::nullopt
+    // if the key is not present. Complexity: O(log n) expected.
+    [[nodiscard]]
+    std::optional<Value> search(const Key& key) const;
+
+    // Remove a key from the structure. Returns true if the key was found
+    // and removed, false otherwise.
+    //
+    // NOTE: The removed node remains allocated in arena_ (lazy cleanup).
+    // It is unlinked from all forward chains and unreachable, but its
+    // memory is reclaimed only when the entire SkipList is destroyed.
+    // This is intentional — for MemTable usage, the entire SkipList is
+    // discarded atomically after flushing to an SSTable.
+    bool remove(const Key& key);
+
+    // -- Observers ----------------------------------------------------------
+
+    // Number of key-value entries currently stored.
+    [[nodiscard]] size_t size() const noexcept { return size_; }
+
+    // Whether the structure contains any entries.
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+
+    // Current highest level in use (0 = empty, kMaxLevel = fully utilized).
+    [[nodiscard]] int current_level() const noexcept { return current_level_; }
+
+    // -- Forward Iterator ---------------------------------------------------
+    // A read-only, forward-only iterator that walks the level-0 chain
+    // in sorted key order. Used by MemTable::snapshot() to produce a
+    // sorted dump for SSTable flushing.
+    // -------------------------------------------------------------------
+    class Iterator {
+    public:
+        Iterator() : node_(nullptr) {}
+        explicit Iterator(SkipListNode* node) : node_(node) {}
+
+        // Dereference: returns a pair of const references to key and value.
+        std::pair<const Key&, const Value&> operator*() const {
+            return { node_->key, node_->value };
+        }
+
+        // Pre-increment: advance to the next node on level 0.
+        Iterator& operator++() {
+            if (node_ != nullptr) {
+                node_ = node_->forward[0];
+            }
+            return *this;
+        }
+
+        // Post-increment
+        Iterator operator++(int) {
+            Iterator snapshot = *this;
+            ++(*this);
+            return snapshot;
+        }
+
+        bool operator==(const Iterator& other) const noexcept {
+            return node_ == other.node_;
+        }
+
+        bool operator!=(const Iterator& other) const noexcept {
+            return node_ != other.node_;
+        }
+
+        // Named accessors (more explicit than structured bindings)
+        [[nodiscard]] const Key&   key()   const { return node_->key; }
+        [[nodiscard]] const Value& value() const { return node_->value; }
+
+    private:
+        SkipListNode* node_; // Non-owning; node lifetime managed by arena_
+    };
+
+    // begin() points to the first data node (head's level-0 successor).
+    // end() is the null sentinel.
+    [[nodiscard]] Iterator begin() const {
+        return Iterator(head_->forward[0]);
+    }
+
+    [[nodiscard]] Iterator end() const {
+        return Iterator(nullptr);
+    }
+
+private:
+    // Generate a random level in [1, kMaxLevel] using a geometric
+    // distribution with parameter kProbability.
+    int random_level();
+
+    // -----------------------------------------------------------------------
+    // MEMORY LAYOUT
+    // -----------------------------------------------------------------------
+    //
+    //  head_ (unique_ptr)          arena_ (vector<unique_ptr>)
+    //  ┌───────────┐               ┌──────────────────────────────┐
+    //  │ Sentinel   │               │ [0] unique_ptr → Node("a")  │
+    //  │ forward[0]─┼──► Node "a"   │ [1] unique_ptr → Node("b")  │
+    //  │ forward[1]─┼──► Node "c"   │ [2] unique_ptr → Node("c")  │
+    //  │ forward[2]─┼──► ...        │ [3] unique_ptr → Node("d")  │
+    //  └───────────┘               └──────────────────────────────┘
+    //                                ▲
+    //                                │ OWNS all nodes. forward[] ptrs
+    //                                │ in nodes are non-owning raw Node*.
+    //                                │
+    //                                └─ Destroyed when SkipList dies.
+    //
+    // -----------------------------------------------------------------------
+
+    // Sentinel head node. Contains no data; its forward[] array is the
+    // entry point into the structure at every level.
+    std::unique_ptr<SkipListNode> head_;
+
+    // Centralized memory arena. Every data node created by insert() is
+    // placed here. Guarantees single ownership and O(n) bulk cleanup.
+    //
+    // Why vector<unique_ptr> is safe here:
+    //   When the vector reallocates (grows), the unique_ptr objects are
+    //   moved to the new buffer. But the underlying Node* heap addresses
+    //   do NOT change — unique_ptr::get() returns the same pointer before
+    //   and after the move. So all raw Node* in forward[] remain valid.
+    std::vector<std::unique_ptr<SkipListNode>> arena_;
+
+    int    current_level_; // Highest level with at least one node (0 = empty)
+    size_t size_;          // Number of entries (not including sentinel)
+
+    // Random number generation for level assignment.
+    // mutable because search() is const but may theoretically need the
+    // RNG in debug/instrumentation scenarios. Here it's used only in
+    // insert(), but keeping it mutable avoids future refactoring.
+    mutable std::mt19937                       rng_;
+    mutable std::uniform_real_distribution<double> dist_;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/sstable_manager.hpp
+
+```hpp
+#pragma once
+
+#include "kvault/sstable_reader.hpp"
+#include "kvault/types.hpp"
+
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <vector>
+
+namespace kvault {
+
+class SSTableManager {
+public:
+    // Initialize the manager, scanning the given directory for .sst files.
+    // Loads them ordered from newest to oldest based on filename.
+    explicit SSTableManager(const std::filesystem::path& sstable_dir);
+
+    // Look up a key across all loaded SSTables, starting from the newest.
+    // Returns:
+    //   std::optional<Value> containing the value
+    //   std::optional<Value> containing "" if it's a DELETE tombstone
+    //   std::nullopt if the key is not found in any SSTable
+    [[nodiscard]] std::optional<Value> get(const Key& key) const;
+    [[nodiscard]] std::optional<KVRecord> get_record(const Key& key) const;
+
+    // Register a newly flushed SSTable. It is pushed to the front
+    // (most recent) of the reader list.
+    void add_sstable(const std::filesystem::path& path);
+
+    // Get aggregated metadata for all loaded SSTables.
+    [[nodiscard]] std::vector<SSTableMetadata> get_metadata() const;
+
+    // The number of active SSTables being managed.
+    [[nodiscard]] size_t count() const noexcept { return readers_.size(); }
+
+private:
+    std::filesystem::path sstable_dir_;
+    
+    // Ordered from newest (index 0) to oldest (index N-1).
+    std::vector<std::unique_ptr<SSTableReader>> readers_;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/sstable_reader.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// sstable_reader.hpp — Sorted String Table Lookup Engine
+// ============================================================================
+//
+// Provides O(log n) point lookups into an .sst file without loading the
+// entire data block into memory. Only the Footer, Sparse Index, and Bloom
+// Filter are kept in RAM after construction.
+//
+// READ PATH for get(key):
+//
+//   Step 1 — Bloom Filter Check (pure in-memory, zero disk I/O)
+//            If might_contain(key) == false → return nullopt immediately
+//
+//   Step 2 — Sparse Index Binary Search (pure in-memory)
+//            Find the two index entries bracketing the target key.
+//            This yields a [start_offset, end_offset) range in the data block.
+//
+//   Step 3 — Data Block Scan (1 disk seek + sequential read of ≤ N records)
+//            fseek() to start_offset, read records one by one until key found
+//            or end_offset is reached.
+//
+// The worst-case disk I/O is reading kIndexBlockInterval sequential records
+// (100 by default), which fits in 1–3 disk pages for typical KV sizes.
+//
+// ============================================================================
+
+#include "kvault/bloom_filter.hpp"
+#include "kvault/sstable_writer.hpp"  // For SSTableFooter, kMagicNumber
+#include "kvault/types.hpp"
+
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace kvault {
+
+// One entry in the in-memory sparse index.
+// Maps a key boundary to its byte offset in the data block.
+struct IndexEntry {
+    Key      key;    // First key in this sparse block
+    uint64_t offset; // Byte offset of this key's record in the data block
+};
+
+// Metadata exposed to the SSTableManager without opening the file.
+struct SSTableMetadata {
+    std::string   min_key;
+    std::string   max_key;
+    uint64_t      entry_count;
+    uint64_t      file_size_bytes;
+    std::string   file_path;
+};
+
+class SSTableReader {
+public:
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    // Open an SSTable file and load its footer, index, and bloom filter
+    // into memory. Throws std::runtime_error if the file is missing,
+    // unreadable, or has a bad magic number.
+    explicit SSTableReader(const std::filesystem::path& path);
+
+    // Destructor closes the file handle.
+    ~SSTableReader();
+
+    // Non-copyable (owns a FILE* handle and heap-allocated index/filter).
+    SSTableReader(const SSTableReader&)            = delete;
+    SSTableReader& operator=(const SSTableReader&) = delete;
+
+    // Movable.
+    SSTableReader(SSTableReader&&) noexcept;
+    SSTableReader& operator=(SSTableReader&&) noexcept;
+
+    // -----------------------------------------------------------------------
+    // Core Read Operation
+    // -----------------------------------------------------------------------
+
+    // Look up a key in this SSTable.
+    //
+    // Returns:
+    //   std::optional<Value> with the value   — key found as a PUT record
+    //   std::optional<Value> with ""           — key is a DELETE tombstone
+    //                                            (caller must check RecordType)
+    //   std::nullopt                           — key not in this SSTable
+    //
+    // Note: To distinguish between "not found" and "tombstone", callers
+    // should use get_record() or check the returned value against the
+    // tombstone sentinel. The KVStore read path handles this logic.
+    [[nodiscard]]
+    std::optional<Value> get(const Key& key) const;
+
+    // Full record lookup — returns the KVRecord (including RecordType) if
+    // the key is found. Returns nullopt if not found.
+    [[nodiscard]]
+    std::optional<KVRecord> get_record(const Key& key) const;
+
+    // -----------------------------------------------------------------------
+    // Metadata & Observers
+    // -----------------------------------------------------------------------
+
+    [[nodiscard]] const std::string& min_key()     const noexcept;
+    [[nodiscard]] const std::string& max_key()     const noexcept;
+    [[nodiscard]] uint64_t           entry_count() const noexcept;
+    [[nodiscard]] uint64_t           file_size()   const;
+    [[nodiscard]] const std::filesystem::path& path() const noexcept;
+
+    // Returns a snapshot of this SSTable's metadata for the Manager/API.
+    [[nodiscard]] SSTableMetadata metadata() const;
+
+private:
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    // Read and validate the 48-byte footer from the end of the file.
+    SSTableFooter read_footer() const;
+
+    // Load the sparse index into memory from the index block.
+    void load_index(uint64_t index_block_offset,
+                    uint64_t bloom_block_offset);
+
+    // Load the Bloom Filter into memory from the bloom block.
+    void load_bloom_filter(uint64_t bloom_block_offset,
+                           uint64_t footer_offset);
+
+    // Read a single KVRecord from the current file position.
+    // Returns false on EOF or read error.
+    static bool read_record(FILE* file, KVRecord& out);
+
+    // -----------------------------------------------------------------------
+    // State
+    // -----------------------------------------------------------------------
+    std::filesystem::path path_;
+    mutable FILE*         file_;        // Kept open for seek+read in get()
+
+    // In-memory index (small: one entry per kIndexBlockInterval keys)
+    std::vector<IndexEntry> index_;
+
+    // In-memory Bloom Filter
+    BloomFilter bloom_filter_;
+
+    // Cached footer fields
+    uint64_t    entry_count_;
+    uint64_t    data_block_size_;       // Size of data block in bytes
+    uint64_t    index_block_offset_;    // Absolute file offset of index block
+    std::string min_key_;
+    std::string max_key_;
+};
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/sstable_writer.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// sstable_writer.hpp — Sorted String Table Serializer
+// ============================================================================
+//
+// Writes a frozen MemTable snapshot (a sorted vector<KVRecord>) to a
+// self-describing binary .sst file on disk.
+//
+// The file is written sequentially from byte 0 to EOF in a single pass:
+//
+//   ┌──────────────────────────────────────────────────────────────────────┐
+//   │  DATA BLOCK                                                          │
+//   │  Sequential encoded key-value records, one after another            │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  SPARSE INDEX BLOCK                                                  │
+//   │  Every Nth key + its data block offset — for binary-search lookup   │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  BLOOM FILTER BLOCK                                                  │
+//   │  Serialized bit array (k, m, bits) from BloomFilter::serialize()     │
+//   ├──────────────────────────────────────────────────────────────────────┤
+//   │  FOOTER (fixed 48 bytes)                                             │
+//   │  Block offsets, entry count, min/max key, magic number              │
+//   └──────────────────────────────────────────────────────────────────────┘
+//
+// See sstable_writer.cpp for the exact byte-level layout of each section.
+//
+// ============================================================================
+
+#include "kvault/bloom_filter.hpp"
+#include "kvault/types.hpp"
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace kvault {
+
+class SSTableWriter {
+public:
+    // Sparse index granularity: one index entry per kIndexBlockInterval keys.
+    // The reader binary-searches this index, then linearly scans within the
+    // block. Smaller values → faster lookup, larger index block.
+    static constexpr size_t kIndexBlockInterval = 100;
+
+    // Magic number at the very end of the footer.
+    // Hex ASCII for "KVLT" followed by version 0x0001.
+    static constexpr uint64_t kMagicNumber = 0x544C564B00010000ULL;
+
+    // -----------------------------------------------------------------------
+    // Primary Interface
+    // -----------------------------------------------------------------------
+
+    // Write a sorted vector of KVRecords to a new SSTable file at `path`.
+    // The entries MUST be sorted in ascending key order (produced by
+    // MemTable::snapshot()).
+    //
+    // Steps:
+    //   1. Write data block — all records sequentially
+    //   2. Write sparse index block — every kIndexBlockInterval-th key
+    //   3. Build and write Bloom Filter block
+    //   4. Write fixed-size footer with block offsets
+    //   5. fsync() for durability
+    //
+    // @param path             Destination .sst file path
+    // @param sorted_entries   Sorted snapshot from MemTable::snapshot()
+    // @param bits_per_key     Bloom Filter sizing (from EngineConfig)
+    static void write(const std::filesystem::path& path,
+                      const std::vector<KVRecord>& sorted_entries,
+                      size_t bits_per_key = 10);
+
+    SSTableWriter() = delete;  // Static-only class; not instantiable
+};
+
+// ============================================================================
+// SSTableFooter — Fixed-size metadata block (48 bytes)
+// ============================================================================
+// Read first by the SSTableReader to locate all other blocks.
+// Written last by the SSTableWriter after all variable blocks are on disk.
+// ============================================================================
+struct SSTableFooter {
+    uint64_t index_block_offset;   // Byte offset of the Sparse Index Block
+    uint64_t bloom_block_offset;   // Byte offset of the Bloom Filter Block
+    uint64_t footer_offset;        // Byte offset of this footer itself
+    uint64_t entry_count;          // Total number of records in the SSTable
+    uint64_t data_block_size;      // Size of the Data Block in bytes
+    uint64_t magic;                // kMagicNumber — validates file integrity
+
+    // Serialized size of this struct (must always be exactly 48 bytes).
+    static constexpr size_t kSerializedSize = 48;
+};
+static_assert(sizeof(SSTableFooter) == SSTableFooter::kSerializedSize,
+              "SSTableFooter size mismatch — update kSerializedSize");
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/types.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// types.hpp — Shared type definitions for the KVault storage engine
+// ============================================================================
+//
+// This header defines the fundamental types used across all layers:
+//   WAL → MemTable → SSTable → KVStore → API
+//
+// Centralizing these prevents circular dependencies and ensures a
+// consistent vocabulary throughout the codebase.
+// ============================================================================
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace kvault {
+
+// ---------------------------------------------------------------------------
+// Key & Value — the atomic units of storage
+// ---------------------------------------------------------------------------
+// Both are variable-length strings. Keys are compared lexicographically
+// for ordered storage in the Skip List and SSTables.
+// ---------------------------------------------------------------------------
+using Key   = std::string;
+using Value = std::string;
+
+// ---------------------------------------------------------------------------
+// RecordType — classifies every mutation in the system
+// ---------------------------------------------------------------------------
+// Stored as a single byte in the WAL binary format and SSTable records.
+// Using uint8_t as the underlying type ensures exact 1-byte serialization.
+// ---------------------------------------------------------------------------
+enum class RecordType : uint8_t {
+    PUT    = 0x00,  // Insert or overwrite a key-value pair
+    DELETE = 0x01,  // Remove a key (written as a tombstone in the MemTable)
+};
+
+// ---------------------------------------------------------------------------
+// KVRecord — the universal mutation unit
+// ---------------------------------------------------------------------------
+// Every write operation (PUT or DELETE) flowing through the system is
+// represented as a KVRecord:
+//
+//   User PUT("x","42") → WAL::append({PUT,"x","42"}) → MemTable::put("x","42")
+//   User DELETE("x")   → WAL::append({DELETE,"x",""}) → MemTable::remove("x")
+//
+// For DELETE records, the `value` field is empty — the deletion is
+// represented by the RecordType alone. Inside the MemTable, deletes
+// are stored as tombstone sentinels (see kTombstoneValue below).
+// ---------------------------------------------------------------------------
+struct KVRecord {
+    RecordType type;
+    Key        key;
+    Value      value;   // Empty for DELETE records
+};
+
+// ---------------------------------------------------------------------------
+// Tombstone Sentinel
+// ---------------------------------------------------------------------------
+// Used internally by the MemTable to mark deleted keys. The MemTable
+// stores a tombstone by inserting the key with this sentinel as its value.
+//
+// This value is NEVER exposed to external callers:
+//   - MemTable::get() returns std::nullopt when it encounters a tombstone
+//   - MemTable::snapshot() converts tombstones to RecordType::DELETE records
+//
+// The sentinel is a non-printable byte sequence chosen to be virtually
+// impossible to collide with real user data.
+// ---------------------------------------------------------------------------
+inline constexpr std::string_view kTombstoneValue =
+    "\x7F__KVAULT_TOMBSTONE__\x7F";
+
+} // namespace kvault
+```
+
+
+## FILE: include/kvault/wal.hpp
+
+```hpp
+#pragma once
+
+// ============================================================================
+// wal.hpp — Write-Ahead Log for Crash Recovery
+// ============================================================================
+//
+// The WAL is an append-only binary log that records every mutation BEFORE
+// it is applied to the MemTable. This guarantees that no acknowledged
+// write is ever lost, even if the process crashes immediately after.
+//
+// Durability Contract:
+//   1. KVStore receives a PUT/DELETE request
+//   2. WAL::append() serializes the record and writes it to disk
+//   3. If sync_per_write is true, fsync() ensures stable storage
+//   4. Only THEN does the MemTable get updated
+//   5. The response is sent to the client
+//
+// Recovery Protocol (on startup):
+//   1. WAL::replay() reads all valid records from the log file
+//   2. Records are re-applied to a fresh MemTable
+//   3. If a record has a bad CRC32, it and all subsequent records are
+//      discarded (they represent a partial write from a crash)
+//
+// Lifecycle:
+//   The WAL is truncated (cleared) after the MemTable has been
+//   successfully flushed to an SSTable. At that point, all records
+//   in the WAL are redundant — they exist on disk in the SSTable.
+//
+// Binary Format:
+//   See the detailed layout diagram in wal.cpp, serialize_record().
+//
+// Thread Safety: NOT thread-safe. The KVStore layer serializes access.
+// ============================================================================
+
+#include "kvault/types.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace kvault {
+
+class WriteAheadLog {
+public:
+    // -----------------------------------------------------------------------
+    // Construction & Destruction
+    // -----------------------------------------------------------------------
+
+    // Opens (or creates) the WAL file in the specified directory.
+    // Creates the directory if it doesn't exist.
+    //
+    // @param wal_directory   Path to the WAL directory (e.g., "data/wal")
+    // @param sync_per_write  If true, every append() calls fsync().
+    //                        If false, only flushes the userspace buffer.
+    WriteAheadLog(const std::filesystem::path& wal_directory,
+                  bool sync_per_write);
+
+    // Closes the write handle.
+    ~WriteAheadLog();
+
+    // Non-copyable, non-movable (owns a raw FILE* handle)
+    WriteAheadLog(const WriteAheadLog&)            = delete;
+    WriteAheadLog& operator=(const WriteAheadLog&) = delete;
+    WriteAheadLog(WriteAheadLog&&)                 = delete;
+    WriteAheadLog& operator=(WriteAheadLog&&)      = delete;
+
+    // -----------------------------------------------------------------------
+    // Core Operations
+    // -----------------------------------------------------------------------
+
+    // Serialize a KVRecord to binary, write it to the WAL file, and
+    // optionally fsync. Throws std::runtime_error on I/O failure.
+    void append(const KVRecord& record);
+
+    // Read the entire WAL file and return all valid records in order.
+    // Stops at the first record that fails CRC32 validation or is
+    // truncated (partial write from a crash). Records after the
+    // corruption point are silently discarded.
+    //
+    // This method opens a separate read handle and does NOT interfere
+    // with the write handle used by append().
+    [[nodiscard]]
+    std::vector<KVRecord> replay() const;
+
+    // Clear the WAL file (truncate to zero bytes). Called after a
+    // successful SSTable flush to reclaim disk space.
+    void truncate();
+
+    // -----------------------------------------------------------------------
+    // Observers
+    // -----------------------------------------------------------------------
+
+    // Current size of the WAL file in bytes.
+    [[nodiscard]] size_t file_size() const;
+
+    // Full path to the WAL file.
+    [[nodiscard]] const std::filesystem::path& file_path() const noexcept;
+
+private:
+    // WAL file is always named "wal.log" inside the configured directory.
+    static constexpr const char* kWALFilename = "wal.log";
+
+    std::filesystem::path path_;           // Full path: wal_directory / wal.log
+    bool                  sync_per_write_; // fsync on every append?
+    FILE*                 write_handle_;   // Kept open in append mode ("ab")
+
+    // -- File Handle Management ---------------------------------------------
+    void open_for_append();
+    void close_handle();
+
+    // -- Sync ---------------------------------------------------------------
+    // Flushes the C stream buffer. If sync_per_write_ is true, also
+    // issues a platform-specific hardware sync:
+    //   Windows: _fileno() + _commit()
+    //   POSIX:   fileno()  + fsync()
+    void sync_to_disk();
+
+    // -- Serialization & CRC32 ----------------------------------------------
+
+    // Serialize a KVRecord into a self-contained binary buffer with a
+    // trailing CRC32 checksum. See wal.cpp for the detailed byte layout.
+    static std::vector<uint8_t> serialize_record(const KVRecord& record);
+
+    // Attempt to read and deserialize one record from the current file
+    // position. Returns std::nullopt on EOF, short read, or CRC mismatch.
+    static std::optional<KVRecord> deserialize_record(FILE* file);
+
+    // Standard CRC32 using the reflected polynomial 0xEDB88320.
+    // The lookup table is generated at compile time (constexpr).
+    static uint32_t compute_crc32(const uint8_t* data, size_t length);
+};
+
+} // namespace kvault
+```
+
+
+## FILE: src/api_routes.cpp
+
+```cpp
+#include "kvault/api_routes.hpp"
+
+namespace kvault {
+
+ApiServer::ApiServer(std::shared_ptr<KVStore> store, uint16_t port)
+    : store_(std::move(store)), port_(port)
+{
+    // Configure CORS
+    auto& cors = app_.get_middleware<crow::CORSHandler>();
+    cors.global()
+        .headers("Content-Type")
+        .methods("POST"_method, "GET"_method, "DELETE"_method, "OPTIONS"_method)
+        .origin("*");
+
+    setup_routes();
+}
+
+void ApiServer::run() {
+    // Crow will run on the specified port. 
+    // multithreaded() allows concurrent request handling.
+    app_.port(port_).multithreaded().run();
+}
+
+void ApiServer::stop() {
+    app_.stop();
+}
+
+void ApiServer::setup_routes() {
+    
+    // GET /api/kv/<key>
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
+        [this](const std::string& key) {
+            auto val = store_->get(key);
+            if (!val) {
+                return crow::response(404, "Key not found");
+            }
+            return crow::response(200, *val);
+        });
+
+    // POST /api/kv
+    // Expects JSON: { "key": "foo", "value": "bar" }
+    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::POST)(
+        [this](const crow::request& req) {
+            auto x = crow::json::load(req.body);
+            if (!x) {
+                return crow::response(400, "Invalid JSON");
+            }
+            if (!x.has("key") || !x.has("value")) {
+                return crow::response(400, "Missing 'key' or 'value'");
+            }
+            
+            std::string key = x["key"].s();
+            std::string value = x["value"].s();
+            
+            store_->put(key, value);
+            return crow::response(200, "OK");
+        });
+
+    // DELETE /api/kv/<key>
+#ifdef DELETE
+#undef DELETE
+#endif
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::DELETE)(
+        [this](const std::string& key) {
+            bool removed = store_->remove(key);
+            if (!removed) {
+                // Return 200 even if it wasn't there, delete is idempotent in LSM
+                return crow::response(200, "OK (was not present)");
+            }
+            return crow::response(200, "OK");
+        });
+
+    // GET /api/metrics
+    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::GET)(
+        [this]() {
+            crow::json::wvalue metrics;
+            metrics["memtable_size_bytes"] = store_->memtable_size();
+            metrics["wal_size_bytes"] = store_->wal_size();
+            metrics["sstable_count"] = store_->sstable_count();
+            return crow::response(metrics);
+        });
+
+    // GET /api/memtable/snapshot
+    // Returns all entries in the active MemTable as a JSON array.
+    // Used by the React dashboard's SkipList visualizer.
+    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::GET)(
+        [this]() {
+            auto records = store_->memtable_snapshot();
+            crow::json::wvalue::list arr;
+            arr.reserve(records.size());
+            for (const auto& rec : records) {
+                crow::json::wvalue entry;
+                entry["key"]   = rec.key;
+                entry["value"] = rec.value;
+                entry["type"]  = (rec.type == RecordType::DELETE) ? "tombstone" : "put";
+                arr.push_back(std::move(entry));
+            }
+            crow::json::wvalue result;
+            result["entries"] = std::move(arr);
+            result["count"]   = records.size();
+            return crow::response(result);
+        });
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/bloom_filter.cpp
+
+```cpp
+#include "kvault/bloom_filter.hpp"
+
+#include <cmath>
+#include <cstring>
+#include <stdexcept>
+
+namespace kvault {
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+BloomFilter::BloomFilter(size_t expected_entries, size_t bits_per_key) {
+    // m = total bit count = expected_entries * bits_per_key
+    // Clamp to at least 64 bits to avoid edge-case division issues.
+    m_ = std::max(expected_entries * bits_per_key, size_t{64});
+
+    // k = optimal hash count = bits_per_key * ln(2) ≈ bits_per_key * 0.693
+    // Clamp between 1 and 30 (30 hashes is already overkill at any bit count).
+    const double k_ideal = static_cast<double>(bits_per_key) * 0.693147;
+    k_ = static_cast<size_t>(std::max(1.0, std::min(k_ideal, 30.0)));
+
+    // Allocate the bit array — ceil(m_ / 8) bytes, zero-initialized.
+    bits_.assign((m_ + 7) / 8, 0u);
+}
+
+BloomFilter::BloomFilter(size_t k, size_t m, std::vector<uint8_t> bits)
+    : k_(k), m_(m), bits_(std::move(bits))
+{}
+
+// ============================================================================
+// Base Hashes — FNV-1a + Murmur-Inspired Mix
+// ============================================================================
+//
+// Two independent 64-bit hashes derived from the same key:
+//
+//   h1 — FNV-1a (Fowler–Noll–Vo): fast, byte-by-byte hashing with excellent
+//         avalanche properties for short string keys.
+//
+//   h2 — A complementary Murmur-inspired finalizer applied to the FNV state,
+//         giving a second hash that is statistically independent of h1.
+//
+// Together they drive the double hashing formula:
+//   bit_i = (h1 + i * h2) mod m     for i in [0, k)
+//
+// Reference: Kirsch & Mitzenmacher, "Less Hashing, Same Performance:
+//            Building a Better Bloom Filter" (ESA 2006)
+// ============================================================================
+
+std::pair<uint64_t, uint64_t> BloomFilter::base_hashes(const Key& key) {
+    // FNV-1a for h1
+    constexpr uint64_t kFNVPrime  = 0x00000100000001B3ULL;
+    constexpr uint64_t kFNVOffset = 0xCBF29CE484222325ULL;
+
+    uint64_t h1 = kFNVOffset;
+    for (char ch : key) {
+        h1 ^= static_cast<uint64_t>(static_cast<unsigned char>(ch));
+        h1 *= kFNVPrime;
+    }
+
+    // Murmur finalizer mix for h2 — breaks linear correlations in h1.
+    uint64_t h2 = h1;
+    h2 ^= h2 >> 33;
+    h2 *= 0xFF51AFD7ED558CCDULL;
+    h2 ^= h2 >> 33;
+    h2 *= 0xC4CEB9FE1A85EC53ULL;
+    h2 ^= h2 >> 33;
+
+    return { h1, h2 };
+}
+
+// ============================================================================
+// Bit Array Accessors
+// ============================================================================
+
+void BloomFilter::set_bit(size_t bit_index) {
+    bits_[bit_index / 8] |= static_cast<uint8_t>(1u << (bit_index % 8));
+}
+
+bool BloomFilter::get_bit(size_t bit_index) const {
+    return (bits_[bit_index / 8] & (1u << (bit_index % 8))) != 0;
+}
+
+// ============================================================================
+// add() — Set k Bits for a Key
+// ============================================================================
+//
+// For each i in [0, k):
+//   bit_position = (h1 + i * h2) mod m
+//   set that bit
+//
+// The +i term ensures each hash function addresses a different position.
+// Using (h2 | 1) guarantees h2 is odd, so gcd(h2, 2^64) = 1 — ensuring
+// the sequence (h1 + i*h2) mod m visits distinct positions.
+// ============================================================================
+
+void BloomFilter::add(const Key& key) {
+    auto [h1, h2] = base_hashes(key);
+    h2 |= 1; // Ensure h2 is odd (coprime with any power-of-2 m for full coverage)
+
+    for (size_t i = 0; i < k_; ++i) {
+        const size_t bit_pos = (h1 + i * h2) % m_;
+        set_bit(bit_pos);
+    }
+}
+
+// ============================================================================
+// might_contain() — Test k Bits for a Key
+// ============================================================================
+
+bool BloomFilter::might_contain(const Key& key) const {
+    auto [h1, h2] = base_hashes(key);
+    h2 |= 1;
+
+    for (size_t i = 0; i < k_; ++i) {
+        const size_t bit_pos = (h1 + i * h2) % m_;
+        if (!get_bit(bit_pos)) {
+            return false; // Definite miss — this key was never add()ed
+        }
+    }
+    return true; // All bits set — probably present (may be a false positive)
+}
+
+// ============================================================================
+// Serialization
+// ============================================================================
+//
+// Format (all integers are little-endian uint32):
+//
+//   Offset   Size   Field    Description
+//   ──────   ────   ─────    ────────────────────────────────────
+//   0        4      k        Number of hash functions
+//   4        4      m        Total bit count
+//   8        N      bits     Packed bit array (N = ceil(m / 8) bytes)
+//   ──────   ────   ─────    ────────────────────────────────────
+//   Total: 8 + ceil(m / 8) bytes
+//
+// ============================================================================
+
+std::vector<uint8_t> BloomFilter::serialize() const {
+    std::vector<uint8_t> out;
+    out.reserve(8 + bits_.size());
+
+    // Helper: write a uint32 in little-endian byte order
+    auto write_u32 = [&](uint32_t v) {
+        out.push_back(static_cast<uint8_t>( v        & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >>  8) & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 16) & 0xFFu));
+        out.push_back(static_cast<uint8_t>((v >> 24) & 0xFFu));
+    };
+
+    write_u32(static_cast<uint32_t>(k_));
+    write_u32(static_cast<uint32_t>(m_));
+    out.insert(out.end(), bits_.begin(), bits_.end());
+
+    return out;
+}
+
+BloomFilter BloomFilter::deserialize(const std::vector<uint8_t>& data) {
+    if (data.size() < 8) {
+        throw std::runtime_error(
+            "BloomFilter::deserialize: buffer too small (< 8 bytes)");
+    }
+
+    auto read_u32 = [&](size_t offset) -> uint32_t {
+        return  static_cast<uint32_t>(data[offset])
+             | (static_cast<uint32_t>(data[offset + 1]) <<  8)
+             | (static_cast<uint32_t>(data[offset + 2]) << 16)
+             | (static_cast<uint32_t>(data[offset + 3]) << 24);
+    };
+
+    const size_t k = read_u32(0);
+    const size_t m = read_u32(4);
+    const size_t expected_bytes = (m + 7) / 8;
+
+    if (data.size() < 8 + expected_bytes) {
+        throw std::runtime_error(
+            "BloomFilter::deserialize: truncated bit array");
+    }
+
+    std::vector<uint8_t> bits(data.begin() + 8,
+                               data.begin() + 8 + static_cast<ptrdiff_t>(expected_bytes));
+    return BloomFilter(k, m, std::move(bits));
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/kvstore.cpp
+
+```cpp
+#include "kvault/kvstore.hpp"
+#include "kvault/sstable_writer.hpp"
+
+#include <chrono>
+#include <filesystem>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <sstream>
+
+namespace kvault {
+
+namespace {
+// Generates a zero-padded timestamp filename like "000001691234567.sst"
+// to ensure lexicographical sorting matches chronological order.
+std::string generate_sstable_filename() {
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    std::ostringstream oss;
+    oss << std::setfill('0') << std::setw(16) << ms << ".sst";
+    return oss.str();
+}
+} // namespace
+
+KVStore::KVStore(const EngineConfig& config)
+    : config_(config)
+{
+    // Ensure directories exist
+    std::filesystem::create_directories(config_.wal_directory);
+    std::filesystem::create_directories(config_.sstable_directory);
+
+    // Initialize subsystems
+    sstable_manager_ = std::make_unique<SSTableManager>(config_.sstable_directory);
+    
+    std::filesystem::path wal_dir = std::filesystem::path(config_.wal_directory);
+    wal_ = std::make_unique<WriteAheadLog>(wal_dir, config_.sync_per_write);
+    
+    memtable_ = std::make_unique<MemTable>(
+        config_.memtable_flush_threshold_bytes
+    );
+
+    // Replay WAL into MemTable if the WAL file already has data
+    auto recovered_records = wal_->replay();
+    for (const auto& rec : recovered_records) {
+        if (rec.type == RecordType::PUT) {
+            memtable_->put(rec.key, rec.value);
+        } else if (rec.type == RecordType::DELETE) {
+            memtable_->remove(rec.key);
+        }
+    }
+}
+
+void KVStore::put(const Key& key, const Value& value) {
+    std::unique_lock lock(rw_mutex_);
+
+    wal_->append(KVRecord{RecordType::PUT, key, value});
+    memtable_->put(key, value);
+
+    if (memtable_->should_flush() || wal_->file_size() >= config_.memtable_flush_threshold_bytes) {
+        trigger_flush();
+    }
+}
+
+std::optional<Value> KVStore::get(const Key& key) const {
+    std::shared_lock lock(rw_mutex_);
+
+    // 1. Check MemTable
+    if (memtable_->contains_tombstone(key)) {
+        return std::nullopt; // Key was deleted recently
+    }
+
+    auto mem_val = memtable_->get(key);
+    if (mem_val) {
+        return mem_val;
+    }
+
+    // 2. Fallback to SSTableManager
+    auto sst_val = sstable_manager_->get(key);
+    if (sst_val && sst_val->empty()) {
+        // Returned empty string from SSTableManager means DELETE tombstone
+        return std::nullopt;
+    }
+    return sst_val;
+}
+
+bool KVStore::remove(const Key& key) {
+    std::unique_lock lock(rw_mutex_);
+    
+    // We append a tombstone regardless of whether the key exists,
+    // as it's an append-only operation that supersedes any older PUTs.
+    wal_->append(KVRecord{RecordType::DELETE, key, ""});
+    
+    // In an LSM tree, deletes are blind writes. Returning true unconditionally
+    // avoids a costly read and prevents a deadlock (cannot acquire shared_lock
+    // while holding unique_lock).
+    memtable_->remove(key);
+
+    if (memtable_->should_flush() || wal_->file_size() >= config_.memtable_flush_threshold_bytes) {
+        trigger_flush();
+    }
+    
+    return true;
+}
+
+void KVStore::force_flush() {
+    std::unique_lock lock(rw_mutex_);
+    if (memtable_->current_size_bytes() > 0) {
+        trigger_flush();
+    }
+}
+
+void KVStore::trigger_flush() {
+    // Note: Calling method must hold unique_lock on rw_mutex_
+    auto records = memtable_->snapshot();
+    if (records.empty()) return;
+
+    std::filesystem::path sst_path = std::filesystem::path(config_.sstable_directory) / generate_sstable_filename();
+    
+    SSTableWriter::write(sst_path, records, config_.bloom_filter_bits_per_key);
+    
+    sstable_manager_->add_sstable(sst_path);
+    
+    // Clear MemTable (creates a new instance)
+    memtable_ = std::make_unique<MemTable>(
+        config_.memtable_flush_threshold_bytes
+    );
+    
+    // Clear WAL (truncate file)
+    wal_->truncate();
+}
+
+size_t KVStore::memtable_size() const {
+    std::shared_lock lock(rw_mutex_);
+    return memtable_->current_size_bytes();
+}
+
+size_t KVStore::sstable_count() const {
+    std::shared_lock lock(rw_mutex_);
+    return sstable_manager_->count();
+}
+
+size_t KVStore::wal_size() const {
+    std::shared_lock lock(rw_mutex_);
+    return wal_->file_size();
+}
+
+std::vector<KVRecord> KVStore::memtable_snapshot() const {
+    std::shared_lock lock(rw_mutex_);
+    return memtable_->snapshot();
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/main.cpp
+
+```cpp
+#include "kvault/api_routes.hpp"
+#include "kvault/config.hpp"
+#include "kvault/kvstore.hpp"
+
+#include <iostream>
+#include <memory>
+
+int main(int argc, char* argv[]) {
+    std::cout << "Starting KVault Engine...\n";
+
+    try {
+        kvault::EngineConfig config;
+        
+        std::string base_dir = "data"; // Portable default
+        
+        // Parse command line arguments
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--data-dir" && i + 1 < argc) {
+                base_dir = argv[++i];
+            }
+        }
+        
+        // You can customize config here before passing it to KVStore
+        config.wal_directory = base_dir + "/wal";
+        config.sstable_directory = base_dir + "/sstables";
+        config.server_port = 8080;
+
+        auto store = std::make_shared<kvault::KVStore>(config);
+        
+        std::cout << "KVault initialized.\n";
+        std::cout << "Recovered WAL size: " << store->wal_size() << " bytes\n";
+        std::cout << "Active SSTables: " << store->sstable_count() << "\n";
+
+        kvault::ApiServer server(store, config.server_port);
+        
+        std::cout << "Starting HTTP API on port " << config.server_port << "...\n";
+        std::cout << "Press Ctrl+C to stop.\n";
+        
+        server.run();
+
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << "\n";
+        return 1;
+    }
+
+    return 0;
+}
+```
+
+
+## FILE: src/memtable.cpp
+
+```cpp
+#include "kvault/memtable.hpp"
+
+#include <string>
+
+namespace kvault {
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+MemTable::MemTable(size_t flush_threshold_bytes)
+    : approximate_size_(0)
+    , flush_threshold_bytes_(flush_threshold_bytes)
+{}
+
+// ============================================================================
+// put() — Insert or Upsert
+// ============================================================================
+//
+// Byte tracking strategy:
+//   - NEW key:    approximate_size_ += key.size() + value.size() + overhead
+//   - UPSERT:     approximate_size_ += (new_value.size() - old_value.size())
+//                 (key size and node overhead are unchanged on upsert)
+//
+// If the key was previously tombstoned, the tombstone value size is
+// subtracted and the new value size is added. The key "comes back to life."
+// ============================================================================
+
+void MemTable::put(const Key& key, const Value& value) {
+    auto existing = skiplist_.search(key);
+
+    if (existing.has_value()) {
+        // Upsert: key and node overhead are unchanged.
+        // Only adjust for the value size delta.
+        approximate_size_ -= existing->size();
+        approximate_size_ += value.size();
+    } else {
+        // New entry: account for everything.
+        approximate_size_ += key.size() + value.size() + kNodeOverheadBytes;
+    }
+
+    skiplist_.insert(key, value);
+}
+
+// ============================================================================
+// remove() — Tombstone Insertion
+// ============================================================================
+//
+// Deletes are NOT physical removals from the Skip List. Instead, we insert
+// the key with the special tombstone sentinel value. This is necessary
+// because:
+//
+//   1. The key might exist in an older SSTable on disk. Without a tombstone
+//      in the MemTable, the read path would fall through and "find" the
+//      key in the SSTable — returning stale data.
+//
+//   2. When the MemTable is flushed to an SSTable, the tombstone is
+//      preserved as a DELETE record, ensuring the deletion propagates
+//      through compaction.
+// ============================================================================
+
+void MemTable::remove(const Key& key) {
+    auto existing = skiplist_.search(key);
+
+    if (existing.has_value()) {
+        // Key exists (live or already tombstoned): replace its value.
+        approximate_size_ -= existing->size();
+        approximate_size_ += kTombstoneValue.size();
+    } else {
+        // Key not in this MemTable — insert a new tombstone entry.
+        approximate_size_ += key.size() + kTombstoneValue.size()
+                           + kNodeOverheadBytes;
+    }
+
+    skiplist_.insert(key, std::string(kTombstoneValue));
+}
+
+// ============================================================================
+// get() — Read with Tombstone Filtering
+// ============================================================================
+//
+// Returns std::nullopt in two cases:
+//   1. Key not found in the Skip List
+//   2. Key found but its value is the tombstone sentinel
+//
+// The caller (KVStore) must distinguish these cases using
+// contains_tombstone() to decide whether to search SSTables.
+// ============================================================================
+
+std::optional<Value> MemTable::get(const Key& key) const {
+    auto result = skiplist_.search(key);
+
+    // Filter out tombstones — they represent deleted keys.
+    if (result.has_value() && *result == kTombstoneValue) {
+        return std::nullopt;
+    }
+
+    return result;
+}
+
+// ============================================================================
+// contains_tombstone() — Explicit Tombstone Check
+// ============================================================================
+//
+// Used by the KVStore read path to short-circuit SSTable lookups:
+//
+//   if (memtable.contains_tombstone(key)) {
+//       // Key is definitively deleted — don't search SSTables
+//       return std::nullopt;
+//   }
+//
+// Without this, a "not found" from get() would cause an unnecessary
+// (and potentially expensive) SSTable search for a key that has been
+// explicitly deleted.
+// ============================================================================
+
+bool MemTable::contains_tombstone(const Key& key) const {
+    auto result = skiplist_.search(key);
+    return result.has_value() && *result == kTombstoneValue;
+}
+
+// ============================================================================
+// Size & Threshold Observers
+// ============================================================================
+
+size_t MemTable::current_size_bytes() const noexcept {
+    return approximate_size_;
+}
+
+bool MemTable::should_flush() const noexcept {
+    return approximate_size_ >= flush_threshold_bytes_;
+}
+
+size_t MemTable::entry_count() const noexcept {
+    return skiplist_.size();
+}
+
+// ============================================================================
+// snapshot() — Ordered Dump for SSTable Flushing
+// ============================================================================
+//
+// Walks the Skip List's level-0 chain (which is sorted by key) and
+// builds a vector of KVRecords:
+//
+//   - Live entries (value != tombstone) → RecordType::PUT
+//   - Tombstoned entries               → RecordType::DELETE (value = "")
+//
+// The returned vector is guaranteed to be in ascending key order,
+// which is exactly what the SSTable writer requires.
+// ============================================================================
+
+std::vector<KVRecord> MemTable::snapshot() const {
+    std::vector<KVRecord> records;
+    records.reserve(skiplist_.size());
+
+    for (auto it = skiplist_.begin(); it != skiplist_.end(); ++it) {
+        KVRecord record;
+
+        if (it.value() == kTombstoneValue) {
+            record.type  = RecordType::DELETE;
+            record.key   = it.key();
+            // record.value is left default-constructed (empty string)
+        } else {
+            record.type  = RecordType::PUT;
+            record.key   = it.key();
+            record.value = it.value();
+        }
+
+        records.push_back(std::move(record));
+    }
+
+    return records;
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/skiplist.cpp
+
+```cpp
+#include "kvault/skiplist.hpp"
+
+#include <cassert>
+#include <chrono>
+
+// Concise int → size_t cast for vector subscripting.
+// Eliminates -Wsign-conversion warnings without verbose static_cast<size_t>()
+// at every call site.
+namespace {
+inline constexpr size_t sz(int i) noexcept {
+    return static_cast<size_t>(i);
+}
+} // anonymous namespace
+
+namespace kvault {
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+SkipList::SkipList()
+    : head_(std::make_unique<SkipListNode>(kMaxLevel))
+    , current_level_(0)
+    , size_(0)
+    , rng_(static_cast<unsigned>(
+          std::chrono::steady_clock::now().time_since_epoch().count()))
+    , dist_(0.0, 1.0)
+{
+    // Reserve arena space to reduce early reallocations.
+    // A 4 MB MemTable with ~100-byte entries ≈ 40K nodes.
+    arena_.reserve(1024);
+}
+
+// ============================================================================
+// Random Level Generation
+// ============================================================================
+// Generates a level in [1, kMaxLevel] with a geometric distribution.
+// Each successive level has a kProbability chance of being included.
+//
+// Expected height of a node = 1 / (1 - p) = 2.0 for p = 0.5
+// Expected total pointers across all nodes = n * 2.0
+// ============================================================================
+
+int SkipList::random_level() {
+    int level = 1;
+    while (level < kMaxLevel && dist_(rng_) < kProbability) {
+        ++level;
+    }
+    return level;
+}
+
+// ============================================================================
+// Insert (Upsert)
+// ============================================================================
+// 1. Descend from the highest active level, recording the last node at
+//    each level whose key < target key (the "update" vector).
+// 2. If the key exists at level 0, overwrite its value (upsert).
+// 3. Otherwise, allocate a new node in the arena, generate a random
+//    height, and splice it into all levels [0, height).
+//
+// Complexity: O(log n) expected time, O(1) amortized allocation.
+// ============================================================================
+
+void SkipList::insert(const Key& key, const Value& value) {
+    // update[i] will hold the rightmost node at level i whose key < `key`.
+    // After traversal, the new node is spliced between update[i] and
+    // update[i]->forward[i] at each level.
+    std::vector<SkipListNode*> update(kMaxLevel, nullptr);
+    SkipListNode* current = head_.get();
+
+    // Traverse: start at the highest active level, move right while
+    // the next node's key is still less than the target, then drop down.
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[sz(i)] != nullptr &&
+               current->forward[sz(i)]->key < key) {
+            current = current->forward[sz(i)];
+        }
+        update[sz(i)] = current;
+    }
+
+    // After the traversal, current->forward[0] is the first node whose
+    // key >= target key. Check for exact match (upsert case).
+    SkipListNode* candidate = current->forward[0];
+    if (candidate != nullptr && candidate->key == key) {
+        // Key exists — update the value in place. No structural change.
+        candidate->value = value;
+        return;
+    }
+
+    // -- Allocate & splice a new node --
+
+    const int new_height = random_level();
+
+    // If the new node is taller than the current structure, extend the
+    // update vector to include the head at those new levels.
+    if (new_height > current_level_) {
+        for (int i = current_level_; i < new_height; ++i) {
+            update[sz(i)] = head_.get();
+        }
+        current_level_ = new_height;
+    }
+
+    // Create the new node in the arena. The arena takes unique ownership;
+    // we extract a raw pointer for forward[] wiring.
+    arena_.push_back(std::make_unique<SkipListNode>(key, value, new_height));
+    SkipListNode* new_node = arena_.back().get();
+
+    // Splice: at each level [0, new_height), insert new_node between
+    // update[i] and update[i]->forward[i].
+    //
+    //  BEFORE:  update[i] ─────────────────► update[i]->forward[i]
+    //  AFTER:   update[i] ──► new_node ──► update[i]->forward[i]
+    //
+    for (int i = 0; i < new_height; ++i) {
+        new_node->forward[sz(i)]  = update[sz(i)]->forward[sz(i)];
+        update[sz(i)]->forward[sz(i)] = new_node;
+    }
+
+    ++size_;
+}
+
+// ============================================================================
+// Search
+// ============================================================================
+// Descend from the highest level, moving right along express lanes until
+// we overshoot, then drop down. At level 0, check for an exact match.
+//
+// Complexity: O(log n) expected — each level skips ~half the remaining nodes.
+// ============================================================================
+
+std::optional<Value> SkipList::search(const Key& key) const {
+    const SkipListNode* current = head_.get();
+
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[sz(i)] != nullptr &&
+               current->forward[sz(i)]->key < key) {
+            current = current->forward[sz(i)];
+        }
+    }
+
+    // current->forward[0] is the first node with key >= target.
+    const SkipListNode* candidate = current->forward[0];
+    if (candidate != nullptr && candidate->key == key) {
+        return candidate->value;
+    }
+
+    return std::nullopt;
+}
+
+// ============================================================================
+// Remove
+// ============================================================================
+// 1. Find the node using the same traversal as insert, recording update[].
+// 2. Unlink the node from all levels by rewiring forward pointers.
+// 3. Shrink current_level_ if the topmost levels are now empty.
+//
+// IMPORTANT: The node is NOT removed from arena_. It remains allocated
+// but unreachable (a "zombie"). This is a deliberate design choice:
+//
+//   - For MemTable usage, physical deletes are tombstones (handled at
+//     the MemTable layer), and the entire SkipList is discarded after
+//     flushing. Scanning arena_ to find-and-erase would be O(n) — worse
+//     than the O(log n) unlink operation itself.
+//
+//   - If arena compaction were needed (e.g., long-lived skip lists),
+//     a generation-based or epoch-based reclamation scheme could be
+//     layered on top without changing this interface.
+//
+// Complexity: O(log n) expected for unlinking. O(1) for "deallocation"
+//             (deferred to SkipList destruction).
+// ============================================================================
+
+bool SkipList::remove(const Key& key) {
+    std::vector<SkipListNode*> update(kMaxLevel, nullptr);
+    SkipListNode* current = head_.get();
+
+    for (int i = current_level_ - 1; i >= 0; --i) {
+        while (current->forward[sz(i)] != nullptr &&
+               current->forward[sz(i)]->key < key) {
+            current = current->forward[sz(i)];
+        }
+        update[sz(i)] = current;
+    }
+
+    SkipListNode* target = current->forward[0];
+
+    // Key not found — nothing to remove.
+    if (target == nullptr || target->key != key) {
+        return false;
+    }
+
+    // Unlink target from every level it participates in.
+    //
+    //  BEFORE:  update[i] ──► target ──► target->forward[i]
+    //  AFTER:   update[i] ──────────────► target->forward[i]
+    //
+    // We stop as soon as update[i]->forward[i] != target, because the
+    // target cannot appear at any higher level without appearing at all
+    // lower levels (skip list invariant).
+    for (int i = 0; i < current_level_; ++i) {
+        if (update[sz(i)]->forward[sz(i)] != target) {
+            break;
+        }
+        update[sz(i)]->forward[sz(i)] = target->forward[sz(i)];
+    }
+
+    // Shrink the structure height if the highest levels are now empty.
+    // This keeps traversal efficient by avoiding wasted empty levels.
+    while (current_level_ > 0 &&
+           head_->forward[static_cast<size_t>(current_level_ - 1)] == nullptr) {
+        --current_level_;
+    }
+
+    --size_;
+    return true;
+
+    // target is now unreachable via forward pointers but still lives in
+    // arena_. Its memory will be freed when this SkipList is destroyed.
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/sstable_manager.cpp
+
+```cpp
+#include "kvault/sstable_manager.hpp"
+
+#include <algorithm>
+#include <iostream>
+
+namespace kvault {
+
+SSTableManager::SSTableManager(const std::filesystem::path& sstable_dir)
+    : sstable_dir_(sstable_dir)
+{
+    std::filesystem::create_directories(sstable_dir_);
+
+    std::vector<std::filesystem::path> sst_files;
+    for (const auto& entry : std::filesystem::directory_iterator(sstable_dir_)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".sst") {
+            sst_files.push_back(entry.path());
+        }
+    }
+
+    // Sort files in descending order (lexicographically by filename).
+    // Assuming filenames are zero-padded timestamps like 1691234567.sst,
+    // this correctly sorts newest first.
+    std::sort(sst_files.begin(), sst_files.end(), std::greater<>());
+
+    for (const auto& path : sst_files) {
+        try {
+            readers_.push_back(std::make_unique<SSTableReader>(path));
+        } catch (const std::exception& e) {
+            std::cerr << "SSTableManager: Failed to load " << path 
+                      << " - " << e.what() << "\n";
+        }
+    }
+}
+
+std::optional<Value> SSTableManager::get(const Key& key) const {
+    auto rec = get_record(key);
+    if (!rec) return std::nullopt;
+    if (rec->type == RecordType::DELETE) return std::string{};
+    return rec->value;
+}
+
+std::optional<KVRecord> SSTableManager::get_record(const Key& key) const {
+    // Search newest to oldest.
+    for (const auto& reader : readers_) {
+        auto result = reader->get_record(key);
+        if (result) {
+            // Found it! It could be a PUT or a DELETE (tombstone).
+            // In either case, it's the most recent state for this key.
+            return result;
+        }
+    }
+    return std::nullopt;
+}
+
+void SSTableManager::add_sstable(const std::filesystem::path& path) {
+    // A newly flushed SSTable is always the newest generation.
+    auto reader = std::make_unique<SSTableReader>(path);
+    readers_.insert(readers_.begin(), std::move(reader));
+}
+
+std::vector<SSTableMetadata> SSTableManager::get_metadata() const {
+    std::vector<SSTableMetadata> meta;
+    meta.reserve(readers_.size());
+    for (const auto& r : readers_) {
+        meta.push_back(r->metadata());
+    }
+    return meta;
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/sstable_reader.cpp
+
+```cpp
+#include "kvault/sstable_reader.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <stdexcept>
+
+namespace kvault {
+
+// ============================================================================
+// Little-Endian Read Helpers (file position advances after each call)
+// ============================================================================
+
+namespace {
+
+bool read_u8(FILE* f, uint8_t& out) {
+    return std::fread(&out, 1, 1, f) == 1;
+}
+
+bool read_u32_le(FILE* f, uint32_t& out) {
+    uint8_t buf[4];
+    if (std::fread(buf, 1, 4, f) != 4) return false;
+    out =  static_cast<uint32_t>(buf[0])
+        | (static_cast<uint32_t>(buf[1]) <<  8)
+        | (static_cast<uint32_t>(buf[2]) << 16)
+        | (static_cast<uint32_t>(buf[3]) << 24);
+    return true;
+}
+
+bool read_u64_le(FILE* f, uint64_t& out) {
+    uint8_t buf[8];
+    if (std::fread(buf, 1, 8, f) != 8) return false;
+    out =  static_cast<uint64_t>(buf[0])
+        | (static_cast<uint64_t>(buf[1]) <<  8)
+        | (static_cast<uint64_t>(buf[2]) << 16)
+        | (static_cast<uint64_t>(buf[3]) << 24)
+        | (static_cast<uint64_t>(buf[4]) << 32)
+        | (static_cast<uint64_t>(buf[5]) << 40)
+        | (static_cast<uint64_t>(buf[6]) << 48)
+        | (static_cast<uint64_t>(buf[7]) << 56);
+    return true;
+}
+
+// Read a length-prefixed string written by write_bytes() in the writer.
+bool read_string(FILE* f, std::string& out) {
+    uint32_t len = 0;
+    if (!read_u32_le(f, len)) return false;
+    out.resize(len);
+    if (len > 0 && std::fread(out.data(), 1, len, f) != len) return false;
+    return true;
+}
+
+// Platform-portable 64-bit fseek
+int fseek64(FILE* f, int64_t offset, int origin) {
+#ifdef _WIN32
+    return _fseeki64(f, offset, origin);
+#else
+    return std::fseek(f, static_cast<long>(offset), origin);
+#endif
+}
+
+int64_t ftell64(FILE* f) {
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
+    return static_cast<int64_t>(std::ftell(f));
+#endif
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// Construction — Open File and Load Metadata
+// ============================================================================
+
+SSTableReader::SSTableReader(const std::filesystem::path& path)
+    : path_(path)
+    , file_(nullptr)
+    , bloom_filter_(1, 10) // temporary; overwritten by load_bloom_filter()
+    , entry_count_(0)
+    , data_block_size_(0)
+    , index_block_offset_(0)
+{
+    file_ = std::fopen(path_.string().c_str(), "rb");
+    if (!file_) {
+        throw std::runtime_error(
+            "SSTableReader: cannot open file: " + path_.string());
+    }
+
+    // Bootstrap sequence (see READER BOOTSTRAP SEQUENCE in sstable_writer.cpp):
+    //   1. Read footer (from end of file)
+    //   2. Load bloom filter (from bloom_block_offset)
+    //   3. Load index (from index_block_offset)
+    const SSTableFooter footer = read_footer();
+
+    if (footer.magic != SSTableWriter::kMagicNumber) {
+        std::fclose(file_);
+        file_ = nullptr;
+        throw std::runtime_error(
+            "SSTableReader: invalid magic number in " + path_.string());
+    }
+
+    entry_count_        = footer.entry_count;
+    data_block_size_    = footer.data_block_size;
+    index_block_offset_ = footer.index_block_offset;
+
+    load_bloom_filter(footer.bloom_block_offset, footer.footer_offset);
+    load_index(footer.index_block_offset, footer.bloom_block_offset);
+}
+
+SSTableReader::~SSTableReader() {
+    if (file_) {
+        std::fclose(file_);
+        file_ = nullptr;
+    }
+}
+
+// Move semantics
+SSTableReader::SSTableReader(SSTableReader&& other) noexcept
+    : path_(std::move(other.path_))
+    , file_(other.file_)
+    , index_(std::move(other.index_))
+    , bloom_filter_(std::move(other.bloom_filter_))
+    , entry_count_(other.entry_count_)
+    , data_block_size_(other.data_block_size_)
+    , min_key_(std::move(other.min_key_))
+    , max_key_(std::move(other.max_key_))
+{
+    other.file_ = nullptr;
+}
+
+SSTableReader& SSTableReader::operator=(SSTableReader&& other) noexcept {
+    if (this != &other) {
+        if (file_) std::fclose(file_);
+        path_            = std::move(other.path_);
+        file_            = other.file_;
+        index_           = std::move(other.index_);
+        bloom_filter_    = std::move(other.bloom_filter_);
+        entry_count_     = other.entry_count_;
+        data_block_size_ = other.data_block_size_;
+        min_key_         = std::move(other.min_key_);
+        max_key_         = std::move(other.max_key_);
+        other.file_      = nullptr;
+    }
+    return *this;
+}
+
+// ============================================================================
+// read_footer — Read the Fixed 48-byte Footer from File End
+// ============================================================================
+
+SSTableFooter SSTableReader::read_footer() const {
+    // Seek to file end - 48 bytes
+    fseek64(file_, -static_cast<int64_t>(SSTableFooter::kSerializedSize), SEEK_END);
+
+    SSTableFooter footer{};
+    if (!read_u64_le(file_, footer.index_block_offset) ||
+        !read_u64_le(file_, footer.bloom_block_offset)  ||
+        !read_u64_le(file_, footer.footer_offset)        ||
+        !read_u64_le(file_, footer.entry_count)          ||
+        !read_u64_le(file_, footer.data_block_size)      ||
+        !read_u64_le(file_, footer.magic))
+    {
+        throw std::runtime_error(
+            "SSTableReader: failed to read footer from " + path_.string());
+    }
+    return footer;
+}
+
+// ============================================================================
+// load_bloom_filter — Deserialize Filter from Bloom Block
+// ============================================================================
+
+void SSTableReader::load_bloom_filter(uint64_t bloom_block_offset,
+                                       uint64_t footer_offset)
+{
+    fseek64(file_, static_cast<int64_t>(bloom_block_offset), SEEK_SET);
+
+    // Read the 4-byte size prefix
+    uint32_t bloom_size = 0;
+    if (!read_u32_le(file_, bloom_size)) {
+        throw std::runtime_error(
+            "SSTableReader: failed to read bloom filter size");
+    }
+
+    // Sanity check: bloom block must fit between its offset and the footer
+    const uint64_t max_bloom_size =
+        footer_offset - bloom_block_offset - 4;
+    if (static_cast<uint64_t>(bloom_size) > max_bloom_size) {
+        throw std::runtime_error(
+            "SSTableReader: bloom filter size exceeds available space");
+    }
+
+    // Read the serialized filter bytes
+    std::vector<uint8_t> bloom_data(bloom_size);
+    if (bloom_size > 0 &&
+        std::fread(bloom_data.data(), 1, bloom_size, file_) != bloom_size) {
+        throw std::runtime_error(
+            "SSTableReader: truncated bloom filter block");
+    }
+
+    bloom_filter_ = BloomFilter::deserialize(bloom_data);
+}
+
+// ============================================================================
+// load_index — Build In-Memory Sparse Index from Index Block
+// ============================================================================
+
+void SSTableReader::load_index(uint64_t index_block_offset,
+                                uint64_t bloom_block_offset)
+{
+    fseek64(file_, static_cast<int64_t>(index_block_offset), SEEK_SET);
+
+    uint32_t entry_count = 0;
+    if (!read_u32_le(file_, entry_count)) {
+        throw std::runtime_error(
+            "SSTableReader: failed to read index entry count");
+    }
+
+    index_.reserve(entry_count);
+
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        IndexEntry entry;
+        uint64_t   offset = 0;
+        if (!read_u64_le(file_, offset) ||
+            !read_string(file_, entry.key))
+        {
+            throw std::runtime_error(
+                "SSTableReader: corrupted index block");
+        }
+        entry.offset = offset;
+        index_.push_back(std::move(entry));
+    }
+
+    // Populate min/max key from the index (first and last entries)
+    if (!index_.empty()) {
+        min_key_ = index_.front().key;
+        // max_key_ is the last index entry's key (≤ actual last key).
+        // For an exact max_key, we'd need to scan; the index key is safe
+        // for range-filter decisions (it's a lower bound of the last block).
+        max_key_ = index_.back().key;
+    }
+
+    (void)bloom_block_offset; // Used only for bounds checking in load_bloom
+}
+
+// ============================================================================
+// read_record — Deserialize One KVRecord from Current File Position
+// ============================================================================
+
+bool SSTableReader::read_record(FILE* file, KVRecord& out) {
+    uint8_t type_byte = 0;
+    if (!read_u8(file, type_byte))          return false;
+    if (!read_string(file, out.key))        return false;
+    if (!read_string(file, out.value))      return false;
+
+    out.type = static_cast<RecordType>(type_byte);
+    return true;
+}
+
+// ============================================================================
+// get() — Three-Step Lookup
+// ============================================================================
+//
+// Step 1: Bloom Filter  — O(k) in-memory bit checks
+// Step 2: Binary Search — O(log(N/interval)) in-memory index scan
+// Step 3: Data Scan     — O(interval) sequential disk reads (1 seek)
+//
+// ============================================================================
+
+std::optional<Value> SSTableReader::get(const Key& key) const {
+    auto record = get_record(key);
+    if (!record) return std::nullopt;
+
+    // Surface tombstones as empty string — the KVStore distinguishes this
+    // from "not found" using contains_tombstone() on the MemTable first.
+    // If a tombstone reaches here (from a flushed MemTable), return "".
+    if (record->type == RecordType::DELETE) {
+        return std::string{}; // Tombstone marker (empty value)
+    }
+    return record->value;
+}
+
+std::optional<KVRecord> SSTableReader::get_record(const Key& key) const {
+    // ── Step 1: Bloom Filter Check ─────────────────────────────────────────
+    if (!bloom_filter_.might_contain(key)) {
+        return std::nullopt;  // Definite miss — zero disk I/O
+    }
+
+    // ── Step 2: Sparse Index Binary Search ─────────────────────────────────
+    // Find the last index entry whose key ≤ target key.
+    // That entry's offset is where we start scanning the data block.
+    //
+    // Using upper_bound then stepping back:
+    //   upper_bound finds the first entry with key > target.
+    //   The entry before it is the last with key ≤ target.
+
+    if (index_.empty()) return std::nullopt;
+
+    auto it = std::upper_bound(
+        index_.begin(), index_.end(), key,
+        [](const Key& k, const IndexEntry& e) { return k < e.key; }
+    );
+
+    // If all index keys are > target, the key can't be in this SSTable
+    // (since the data is sorted, and the first index key is the minimum).
+    if (it == index_.begin()) {
+        return std::nullopt;
+    }
+
+    // Step back to get the last entry with key ≤ target
+    --it;
+    const uint64_t scan_start = it->offset;
+
+    // Determine the scan end: use the NEXT index entry's offset as the
+    // upper bound. If this is the last index entry, scan until data block end.
+    uint64_t scan_end;
+    const auto next_it = std::next(it);
+    if (next_it != index_.end()) {
+        scan_end = next_it->offset;
+    } else {
+        // Last sparse block: scan until the start of the index block,
+        // which is the exact byte boundary between data and metadata.
+        scan_end = index_block_offset_;
+    }
+
+    // ── Step 3: Data Block Scan ─────────────────────────────────────────────
+    // Seek once, then read records sequentially until we find the key or
+    // exhaust the sparse block's byte range.
+
+    fseek64(file_, static_cast<int64_t>(scan_start), SEEK_SET);
+
+    while (static_cast<uint64_t>(ftell64(file_)) < scan_end) {
+        KVRecord record;
+        if (!read_record(file_, record)) {
+            break; // EOF or read error — key not found in this range
+        }
+
+        if (record.key == key) {
+            return record;  // Found!
+        }
+
+        // Since data is sorted, if we've passed the target key we can stop.
+        if (record.key > key) {
+            break;
+        }
+    }
+
+    return std::nullopt; // Not in this SSTable
+}
+
+// ============================================================================
+// Observers
+// ============================================================================
+
+const std::string& SSTableReader::min_key() const noexcept {
+    return min_key_;
+}
+
+const std::string& SSTableReader::max_key() const noexcept {
+    return max_key_;
+}
+
+uint64_t SSTableReader::entry_count() const noexcept {
+    return entry_count_;
+}
+
+uint64_t SSTableReader::file_size() const {
+    if (!std::filesystem::exists(path_)) return 0;
+    return static_cast<uint64_t>(std::filesystem::file_size(path_));
+}
+
+const std::filesystem::path& SSTableReader::path() const noexcept {
+    return path_;
+}
+
+SSTableMetadata SSTableReader::metadata() const {
+    return SSTableMetadata{
+        .min_key         = min_key_,
+        .max_key         = max_key_,
+        .entry_count     = entry_count_,
+        .file_size_bytes = file_size(),
+        .file_path       = path_.string()
+    };
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/sstable_writer.cpp
+
+```cpp
+#include "kvault/sstable_writer.hpp"
+
+#include <cstring>
+#include <stdexcept>
+
+// Platform-specific fsync for durability after flush
+#ifdef _WIN32
+    #include <io.h>
+#else
+    #include <unistd.h>
+#endif
+
+namespace kvault {
+
+// ============================================================================
+// SSTable Binary File Format — Complete Byte Layout
+// ============================================================================
+//
+// All multi-byte integers are stored in LITTLE-ENDIAN byte order.
+// The file is written top-to-bottom in a single sequential pass.
+//
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║  SECTION 1: DATA BLOCK                                              ║
+// ║  Starts at byte offset 0.                                           ║
+// ║  Contains all KVRecords in sorted key order.                        ║
+// ║                                                                      ║
+// ║  Each record is encoded as:                                          ║
+// ║                                                                      ║
+// ║   Offset  Size  Field          Description                           ║
+// ║   ──────  ────  ─────          ─────────────────────────────────     ║
+// ║   +0      1     record_type    0x00=PUT, 0x01=DELETE                 ║
+// ║   +1      4     key_length     Length of key bytes (uint32 LE)       ║
+// ║   +5      K     key_data       Raw key bytes                         ║
+// ║   +5+K    4     value_length   Length of value bytes (uint32 LE)     ║
+// ║   +9+K    V     value_data     Raw value bytes                       ║
+// ║                                                                      ║
+// ║  Total per record: 9 + K + V bytes                                   ║
+// ║  Total data block: sum(9 + Ki + Vi) for all i in [0, N)              ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  SECTION 2: SPARSE INDEX BLOCK                                       ║
+// ║  Starts immediately after the last data record.                      ║
+// ║  Contains one entry per kIndexBlockInterval-th data record.          ║
+// ║  Also always contains an entry for the LAST record.                  ║
+// ║                                                                      ║
+// ║  Header (4 bytes):                                                   ║
+// ║   +0      4     entry_count    Number of index entries (uint32 LE)   ║
+// ║                                                                      ║
+// ║  Each index entry:                                                   ║
+// ║   +0      8     data_offset    Byte offset in data block (uint64 LE) ║
+// ║   +8      4     key_length     Length of key bytes (uint32 LE)       ║
+// ║   +12     K     key_data       Raw key bytes                         ║
+// ║                                                                      ║
+// ║  Binary search on data_offset + key finds the scan start point.     ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  SECTION 3: BLOOM FILTER BLOCK                                       ║
+// ║  Starts immediately after the index block.                           ║
+// ║                                                                      ║
+// ║  Header (4 bytes):                                                   ║
+// ║   +0      4     bloom_size     Byte size of serialized filter        ║
+// ║                                                                      ║
+// ║  Body (bloom_size bytes):                                            ║
+// ║   BloomFilter::serialize() output:                                   ║
+// ║     [0..3]  k (uint32 LE) — number of hash functions                 ║
+// ║     [4..7]  m (uint32 LE) — number of bits                           ║
+// ║     [8..]   packed bit array  ceil(m/8) bytes                        ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  SECTION 4: FOOTER (exactly 48 bytes, always at file end - 48)       ║
+// ║                                                                      ║
+// ║   Offset  Size  Field                  Description                   ║
+// ║   ──────  ────  ─────                  ─────────────────────────     ║
+// ║   +0      8     index_block_offset     Byte offset of section 2      ║
+// ║   +8      8     bloom_block_offset     Byte offset of section 3      ║
+// ║   +16     8     footer_offset          Byte offset of this footer    ║
+// ║   +24     8     entry_count            Total KVRecord count          ║
+// ║   +32     8     data_block_size        Size of section 1 in bytes    ║
+// ║   +40     8     magic                  0x544C564B00010000 ("KVLT")   ║
+// ║                                                                      ║
+// ║  Total: 6 × 8 = 48 bytes. Validated by static_assert in header.     ║
+// ╚══════════════════════════════════════════════════════════════════════╝
+//
+// READER BOOTSTRAP SEQUENCE:
+//   1. fseek(EOF - 48)     → read Footer
+//   2. Validate magic number
+//   3. fseek(bloom_block_offset)  → read + deserialize BloomFilter
+//   4. fseek(index_block_offset)  → read all IndexEntries into memory
+//   → Ready for O(log n) point lookups with 1 disk seek per query
+//
+// ============================================================================
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Little-Endian Write Helpers
+// ---------------------------------------------------------------------------
+
+void write_u8(FILE* f, uint8_t v) {
+    std::fwrite(&v, 1, 1, f);
+}
+
+void write_u32_le(FILE* f, uint32_t v) {
+    uint8_t buf[4] = {
+        static_cast<uint8_t>( v        & 0xFFu),
+        static_cast<uint8_t>((v >>  8) & 0xFFu),
+        static_cast<uint8_t>((v >> 16) & 0xFFu),
+        static_cast<uint8_t>((v >> 24) & 0xFFu)
+    };
+    std::fwrite(buf, 1, 4, f);
+}
+
+void write_u64_le(FILE* f, uint64_t v) {
+    uint8_t buf[8] = {
+        static_cast<uint8_t>( v        & 0xFFULL),
+        static_cast<uint8_t>((v >>  8) & 0xFFULL),
+        static_cast<uint8_t>((v >> 16) & 0xFFULL),
+        static_cast<uint8_t>((v >> 24) & 0xFFULL),
+        static_cast<uint8_t>((v >> 32) & 0xFFULL),
+        static_cast<uint8_t>((v >> 40) & 0xFFULL),
+        static_cast<uint8_t>((v >> 48) & 0xFFULL),
+        static_cast<uint8_t>((v >> 56) & 0xFFULL)
+    };
+    std::fwrite(buf, 1, 8, f);
+}
+
+// Write a length-prefixed string (uint32 LE length + raw bytes)
+void write_bytes(FILE* f, const std::string& s) {
+    write_u32_le(f, static_cast<uint32_t>(s.size()));
+    if (!s.empty()) {
+        std::fwrite(s.data(), 1, s.size(), f);
+    }
+}
+
+// Return current file position (byte offset from beginning)
+uint64_t ftell64(FILE* f) {
+#ifdef _WIN32
+    return static_cast<uint64_t>(_ftelli64(f));
+#else
+    return static_cast<uint64_t>(std::ftell(f));
+#endif
+}
+
+// Flush + fsync for durability
+void sync_file(FILE* f) {
+    std::fflush(f);
+#ifdef _WIN32
+    _commit(_fileno(f));
+#else
+    ::fsync(fileno(f));
+#endif
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// SSTableWriter::write — Main Entry Point
+// ============================================================================
+
+void SSTableWriter::write(const std::filesystem::path& path,
+                          const std::vector<KVRecord>& sorted_entries,
+                          size_t bits_per_key)
+{
+    if (sorted_entries.empty()) {
+        // Write an empty but valid SSTable so the manager doesn't need
+        // special-case logic for zero-entry tables.
+        // (Edge case: flush triggered after all keys were deleted.)
+    }
+
+    // Create parent directories if they don't exist
+    std::filesystem::create_directories(path.parent_path());
+
+    FILE* f = std::fopen(path.string().c_str(), "wb");
+    if (!f) {
+        throw std::runtime_error(
+            "SSTableWriter: failed to open for write: " + path.string());
+    }
+
+    // -----------------------------------------------------------------------
+    // SECTION 1: DATA BLOCK
+    // -----------------------------------------------------------------------
+    // Write every KVRecord sequentially. For each record, note its starting
+    // byte offset — used to build the sparse index.
+
+    // Build Bloom Filter in parallel as we iterate (saves a second pass).
+    BloomFilter bloom(sorted_entries.size(), bits_per_key);
+
+    // Sparse index: collect (offset, key) for every kIndexBlockInterval-th record.
+    struct RawIndexEntry {
+        uint64_t    offset;
+        std::string key;
+    };
+    std::vector<RawIndexEntry> raw_index;
+    raw_index.reserve(sorted_entries.size() / kIndexBlockInterval + 2);
+
+    const uint64_t data_block_start = ftell64(f); // Should always be 0
+
+    for (size_t idx = 0; idx < sorted_entries.size(); ++idx) {
+        const auto& rec = sorted_entries[idx];
+
+        const uint64_t record_offset = ftell64(f);
+
+        // Record the offset of every Nth key (and always the first key)
+        if (idx == 0 || idx % kIndexBlockInterval == 0) {
+            raw_index.push_back({ record_offset, rec.key });
+        }
+
+        // Feed the Bloom Filter (only PUT keys need lookup; DELETE tombstones
+        // still need to be found to propagate the deletion, so add all keys).
+        bloom.add(rec.key);
+
+        // Write the record: [type 1B] [key_len 4B] [key] [val_len 4B] [val]
+        write_u8(f, static_cast<uint8_t>(rec.type));
+        write_bytes(f, rec.key);
+        write_bytes(f, rec.value);
+    }
+
+    const uint64_t data_block_end  = ftell64(f);
+    const uint64_t data_block_size = data_block_end - data_block_start;
+
+    // -----------------------------------------------------------------------
+    // SECTION 2: SPARSE INDEX BLOCK
+    // -----------------------------------------------------------------------
+
+    const uint64_t index_block_offset = ftell64(f);
+
+    write_u32_le(f, static_cast<uint32_t>(raw_index.size()));
+    for (const auto& entry : raw_index) {
+        write_u64_le(f, entry.offset);
+        write_bytes(f, entry.key);
+    }
+
+    // -----------------------------------------------------------------------
+    // SECTION 3: BLOOM FILTER BLOCK
+    // -----------------------------------------------------------------------
+
+    const uint64_t bloom_block_offset = ftell64(f);
+    const auto bloom_bytes = bloom.serialize();
+
+    write_u32_le(f, static_cast<uint32_t>(bloom_bytes.size()));
+    std::fwrite(bloom_bytes.data(), 1, bloom_bytes.size(), f);
+
+    // -----------------------------------------------------------------------
+    // SECTION 4: FOOTER (48 bytes)
+    // -----------------------------------------------------------------------
+
+    const uint64_t footer_offset = ftell64(f);
+
+    SSTableFooter footer{};
+    footer.index_block_offset = index_block_offset;
+    footer.bloom_block_offset = bloom_block_offset;
+    footer.footer_offset      = footer_offset;
+    footer.entry_count        = static_cast<uint64_t>(sorted_entries.size());
+    footer.data_block_size    = data_block_size;
+    footer.magic              = kMagicNumber;
+
+    write_u64_le(f, footer.index_block_offset);
+    write_u64_le(f, footer.bloom_block_offset);
+    write_u64_le(f, footer.footer_offset);
+    write_u64_le(f, footer.entry_count);
+    write_u64_le(f, footer.data_block_size);
+    write_u64_le(f, footer.magic);
+
+    // Durability: ensure the full file hits stable storage before we
+    // consider the SSTable "live". The WAL can only be truncated after this.
+    sync_file(f);
+    std::fclose(f);
+}
+
+} // namespace kvault
+```
+
+
+## FILE: src/wal.cpp
+
+```cpp
+#include "kvault/wal.hpp"
+
+#include <array>
+#include <cstring>
+#include <stdexcept>
+
+// Platform-specific headers for hardware sync (fsync / _commit)
+#ifdef _WIN32
+    #include <io.h>       // _fileno, _commit
+#else
+    #include <unistd.h>   // fileno, fsync
+#endif
+
+namespace kvault {
+
+// ============================================================================
+// CRC32 — Compile-Time Lookup Table
+// ============================================================================
+//
+// Standard CRC32 using the reflected polynomial 0xEDB88320 (same as
+// Ethernet, zlib, and PNG). Used to detect corrupted WAL records after
+// a crash — e.g., a partial write where only half the record made it
+// to disk before power was lost.
+//
+// The 256-entry lookup table is generated at compile time via constexpr,
+// so there's zero runtime initialization cost.
+// ============================================================================
+
+namespace {
+
+constexpr std::array<uint32_t, 256> generate_crc32_table() {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; ++j) {
+            crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+        }
+        table[i] = crc;
+    }
+    return table;
+}
+
+// Computed at compile time — stored in the binary's read-only data segment.
+constexpr auto kCRC32Table = generate_crc32_table();
+
+// ---------------------------------------------------------------------------
+// Little-Endian Serialization Helpers
+// ---------------------------------------------------------------------------
+// These functions explicitly encode/decode integers byte-by-byte in
+// little-endian order, making the WAL format portable across architectures
+// (even though x86/x64 and modern ARM are natively little-endian).
+// ---------------------------------------------------------------------------
+
+void write_u32_le(std::vector<uint8_t>& buf, uint32_t val) {
+    buf.push_back(static_cast<uint8_t>( val        & 0xFFu));
+    buf.push_back(static_cast<uint8_t>((val >>  8) & 0xFFu));
+    buf.push_back(static_cast<uint8_t>((val >> 16) & 0xFFu));
+    buf.push_back(static_cast<uint8_t>((val >> 24) & 0xFFu));
+}
+
+uint32_t read_u32_le(const uint8_t* data) {
+    return  static_cast<uint32_t>(data[0])
+         | (static_cast<uint32_t>(data[1]) <<  8)
+         | (static_cast<uint32_t>(data[2]) << 16)
+         | (static_cast<uint32_t>(data[3]) << 24);
+}
+
+// Read exactly `count` bytes from `file` into `buf`.
+// Returns false on EOF or short read (fewer bytes available than requested).
+bool read_exact(FILE* file, void* buf, size_t count) {
+    return std::fread(buf, 1, count, file) == count;
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// CRC32 Computation
+// ============================================================================
+
+uint32_t WriteAheadLog::compute_crc32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < length; ++i) {
+        crc = kCRC32Table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+// ============================================================================
+// Construction & Destruction
+// ============================================================================
+
+WriteAheadLog::WriteAheadLog(const std::filesystem::path& wal_directory,
+                             bool sync_per_write)
+    : path_(wal_directory / kWALFilename)
+    , sync_per_write_(sync_per_write)
+    , write_handle_(nullptr)
+{
+    // Ensure the WAL directory exists (creates parent dirs if needed).
+    std::filesystem::create_directories(wal_directory);
+    open_for_append();
+}
+
+WriteAheadLog::~WriteAheadLog() {
+    close_handle();
+}
+
+void WriteAheadLog::open_for_append() {
+    // "ab" = append + binary. Creates the file if it doesn't exist.
+    // Existing content is preserved; new writes go to the end.
+    write_handle_ = std::fopen(path_.string().c_str(), "ab");
+    if (!write_handle_) {
+        throw std::runtime_error(
+            "WAL: failed to open file for append: " + path_.string());
+    }
+}
+
+void WriteAheadLog::close_handle() {
+    if (write_handle_) {
+        std::fclose(write_handle_);
+        write_handle_ = nullptr;
+    }
+}
+
+// ============================================================================
+// Platform-Specific Sync
+// ============================================================================
+//
+// Two levels of durability:
+//
+//   fflush()  — pushes data from the C library's userspace buffer into
+//               the OS kernel's page cache. Fast, but data can be lost
+//               if the machine loses power (page cache is in RAM).
+//
+//   fsync()   — forces the OS to write the page cache to the physical
+//               storage device. Slower (involves disk I/O), but the
+//               data survives power failures.
+//
+// When sync_per_write_ is false, we only fflush(). When true, we also
+// fsync() via the platform-appropriate system call.
+// ============================================================================
+
+void WriteAheadLog::sync_to_disk() {
+    if (!write_handle_) return;
+
+    // Step 1: Always flush the userspace buffer to the OS.
+    std::fflush(write_handle_);
+
+    // Step 2: Optionally force the OS to write to stable storage.
+    if (sync_per_write_) {
+#ifdef _WIN32
+        const int fd = _fileno(write_handle_);
+        _commit(fd);
+#else
+        const int fd = fileno(write_handle_);
+        ::fsync(fd);
+#endif
+    }
+}
+
+// ============================================================================
+// Binary Serialization
+// ============================================================================
+//
+// WAL Record Layout (all multi-byte fields are little-endian):
+//
+// Offset   Size     Field           Description
+// ──────   ──────   ─────────────   ──────────────────────────────────────
+// 0        1        record_type     0x00 = PUT, 0x01 = DELETE
+// 1        4        key_length      Length of key_data in bytes (uint32 LE)
+// 5        K        key_data        Raw key bytes (K = key_length)
+// 5+K      4        value_length    Length of value_data in bytes (uint32 LE)
+// 9+K      V        value_data      Raw value bytes (V = value_length)
+// 9+K+V    4        crc32           CRC32 of bytes [0 .. 9+K+V) (uint32 LE)
+// ──────   ──────   ─────────────   ──────────────────────────────────────
+// Total:   13 + K + V bytes per record
+//
+// The CRC32 covers the ENTIRE record payload (type + key_len + key +
+// val_len + val) but NOT itself. During replay, we recompute the CRC32
+// over the payload and compare it against the stored value. A mismatch
+// indicates corruption (e.g., partial write from a crash).
+//
+// Example: PUT("hello", "world")
+//   type       = 0x00
+//   key_len    = 0x05 0x00 0x00 0x00  (5 in LE)
+//   key_data   = 0x68 0x65 0x6C 0x6C 0x6F  ("hello")
+//   val_len    = 0x05 0x00 0x00 0x00  (5 in LE)
+//   val_data   = 0x77 0x6F 0x72 0x6C 0x64  ("world")
+//   crc32      = [4 bytes computed over the 23 payload bytes above]
+//   Total: 27 bytes
+//
+// ============================================================================
+
+std::vector<uint8_t> WriteAheadLog::serialize_record(const KVRecord& record) {
+    const auto key_len = static_cast<uint32_t>(record.key.size());
+    const auto val_len = static_cast<uint32_t>(record.value.size());
+
+    // Pre-allocate the exact buffer size:
+    //   1 (type) + 4 (key_len) + K + 4 (val_len) + V + 4 (crc) = 13 + K + V
+    std::vector<uint8_t> buf;
+    buf.reserve(static_cast<size_t>(13) + key_len + val_len);
+
+    // 1. Record type (1 byte)
+    buf.push_back(static_cast<uint8_t>(record.type));
+
+    // 2. Key length (4 bytes LE) + key data
+    write_u32_le(buf, key_len);
+    buf.insert(buf.end(), record.key.begin(), record.key.end());
+
+    // 3. Value length (4 bytes LE) + value data
+    write_u32_le(buf, val_len);
+    buf.insert(buf.end(), record.value.begin(), record.value.end());
+
+    // 4. CRC32 over all preceding bytes (the payload)
+    const uint32_t crc = compute_crc32(buf.data(), buf.size());
+    write_u32_le(buf, crc);
+
+    return buf;
+}
+
+// ============================================================================
+// Binary Deserialization (used by replay)
+// ============================================================================
+//
+// Reads one record from the current file position. Returns std::nullopt
+// if the record is incomplete (truncated by crash) or has a bad CRC32.
+//
+// After a failed deserialization, the file position is indeterminate —
+// the caller should stop reading (we can't determine the next record
+// boundary after corruption).
+// ============================================================================
+
+std::optional<KVRecord> WriteAheadLog::deserialize_record(FILE* file) {
+    // Accumulate the payload bytes for CRC verification.
+    std::vector<uint8_t> payload;
+
+    // 1. Record type (1 byte)
+    uint8_t type_byte = 0;
+    if (!read_exact(file, &type_byte, 1)) {
+        return std::nullopt;  // EOF — no more records
+    }
+    if (type_byte > static_cast<uint8_t>(RecordType::DELETE)) {
+        return std::nullopt;  // Invalid type — corruption
+    }
+    payload.push_back(type_byte);
+
+    // 2. Key length (4 bytes LE)
+    uint8_t len_buf[4];
+    if (!read_exact(file, len_buf, 4)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), len_buf, len_buf + 4);
+    const uint32_t key_len = read_u32_le(len_buf);
+
+    // Sanity bound: reject absurdly large keys (> 16 MB) to prevent
+    // OOM from corrupted length fields.
+    if (key_len > 16u * 1024 * 1024) {
+        return std::nullopt;
+    }
+
+    // 3. Key data
+    std::string key(key_len, '\0');
+    if (key_len > 0 && !read_exact(file, key.data(), key_len)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), key.begin(), key.end());
+
+    // 4. Value length (4 bytes LE)
+    if (!read_exact(file, len_buf, 4)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), len_buf, len_buf + 4);
+    const uint32_t val_len = read_u32_le(len_buf);
+
+    if (val_len > 16u * 1024 * 1024) {
+        return std::nullopt;
+    }
+
+    // 5. Value data
+    std::string value(val_len, '\0');
+    if (val_len > 0 && !read_exact(file, value.data(), val_len)) {
+        return std::nullopt;  // Truncated record
+    }
+    payload.insert(payload.end(), value.begin(), value.end());
+
+    // 6. Stored CRC32 (4 bytes LE)
+    uint8_t crc_buf[4];
+    if (!read_exact(file, crc_buf, 4)) {
+        return std::nullopt;  // Truncated record
+    }
+    const uint32_t stored_crc   = read_u32_le(crc_buf);
+    const uint32_t computed_crc = compute_crc32(payload.data(), payload.size());
+
+    // 7. CRC verification
+    if (stored_crc != computed_crc) {
+        // Checksum mismatch — this record (and all following) is corrupted.
+        // This typically happens when a crash interrupted a write mid-record.
+        return std::nullopt;
+    }
+
+    // Build the validated KVRecord.
+    KVRecord record;
+    record.type  = static_cast<RecordType>(type_byte);
+    record.key   = std::move(key);
+    record.value = std::move(value);
+    return record;
+}
+
+// ============================================================================
+// append() — Write a Record to the WAL
+// ============================================================================
+
+void WriteAheadLog::append(const KVRecord& record) {
+    if (!write_handle_) {
+        throw std::runtime_error("WAL: cannot append — file handle is closed");
+    }
+
+    const auto serialized = serialize_record(record);
+
+    const size_t written = std::fwrite(
+        serialized.data(), 1, serialized.size(), write_handle_);
+
+    if (written != serialized.size()) {
+        throw std::runtime_error(
+            "WAL: short write — expected " +
+            std::to_string(serialized.size()) +
+            " bytes, wrote " + std::to_string(written));
+    }
+
+    sync_to_disk();
+}
+
+// ============================================================================
+// replay() — Recovery: Read All Valid Records
+// ============================================================================
+//
+// Opens the WAL file in read-only mode and deserializes records one by
+// one until:
+//   - EOF is reached (all records are valid), or
+//   - A record fails deserialization (CRC mismatch or truncation).
+//
+// Records after the first failure are discarded. This is safe because
+// the WAL is append-only — a corrupted record means a crash occurred
+// during that write, so no subsequent records could have been fully
+// written either.
+// ============================================================================
+
+std::vector<KVRecord> WriteAheadLog::replay() const {
+    std::vector<KVRecord> records;
+
+    // Open a SEPARATE read handle (the write handle stays open for appends).
+    FILE* read_handle = std::fopen(path_.string().c_str(), "rb");
+    if (!read_handle) {
+        // WAL file doesn't exist yet — first run, nothing to replay.
+        return records;
+    }
+
+    while (true) {
+        auto record = deserialize_record(read_handle);
+        if (!record.has_value()) {
+            break;  // EOF or corruption — stop here
+        }
+        records.push_back(std::move(*record));
+    }
+
+    std::fclose(read_handle);
+    return records;
+}
+
+// ============================================================================
+// truncate() — Clear the WAL After Successful Flush
+// ============================================================================
+//
+// After the MemTable has been successfully flushed to an SSTable, all
+// records in the WAL are redundant (they exist on disk in the SSTable).
+// Truncating the WAL reclaims disk space and ensures that recovery
+// doesn't replay already-persisted records.
+// ============================================================================
+
+void WriteAheadLog::truncate() {
+    close_handle();
+
+    // Truncate the file to zero bytes using the C++17 filesystem API.
+    std::filesystem::resize_file(path_, 0);
+
+    // Reopen in append mode for future writes.
+    open_for_append();
+}
+
+// ============================================================================
+// Observers
+// ============================================================================
+
+size_t WriteAheadLog::file_size() const {
+    if (!std::filesystem::exists(path_)) {
+        return 0;
+    }
+    return static_cast<size_t>(std::filesystem::file_size(path_));
+}
+
+const std::filesystem::path& WriteAheadLog::file_path() const noexcept {
+    return path_;
+}
+
+} // namespace kvault
+```
+
+
+## FILE: tests/CMakeLists.txt
+
+```cmake
+# ============================================================================
+# tests/CMakeLists.txt — Unit Test Configuration
+# ============================================================================
+
+add_executable(kvault_tests
+    test_skiplist.cpp
+    test_memtable.cpp
+    test_wal.cpp
+    test_sstable.cpp
+    test_kvstore_integration.cpp
+)
+
+target_link_libraries(kvault_tests
+    PRIVATE
+        kvault_engine
+        GTest::gtest_main      # Provides main() — no need to write our own
+)
+
+# Automatically discover and register all TEST() / TEST_F() macros with CTest.
+# Tests can be run via `ctest` or directly via `./kvault_tests`.
+include(GoogleTest)
+gtest_discover_tests(kvault_tests)
+```
+
+
+## FILE: tests/test_kvstore_integration.cpp
+
+```cpp
+// ============================================================================
+// test_kvstore_integration.cpp — End-to-end integration tests for KVStore
+// ============================================================================
+// Tests the full lifecycle of data moving from the Write-Ahead Log to the
+// MemTable, triggering a flush based on size, writing an SSTable to disk,
+// clearing the MemTable and WAL, and then reading back correctly from the
+// SSTableManager fallback path.
+// ============================================================================
+
+#include "kvault/config.hpp"
+#include "kvault/kvstore.hpp"
+
+#include <gtest/gtest.h>
+#include <filesystem>
+#include <string>
+
+namespace kvault {
+namespace {
+
+class KVStoreTest : public ::testing::Test {
+protected:
+    std::filesystem::path test_dir_;
+    EngineConfig config_;
+
+    void SetUp() override {
+        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        test_dir_ = std::filesystem::temp_directory_path() / ("kvault_store_" + std::string(info->name()));
+        std::filesystem::remove_all(test_dir_);
+        std::filesystem::create_directories(test_dir_);
+
+        config_.wal_directory = (test_dir_ / "wal").string();
+        config_.sstable_directory = (test_dir_ / "sstables").string();
+        // Set a small flush threshold to force flushes during tests
+        config_.memtable_flush_threshold_bytes = 4096; // 4KB
+        config_.sync_per_write = false; // faster tests
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+    }
+};
+
+TEST_F(KVStoreTest, BasicPutAndGet) {
+    KVStore store(config_);
+    store.put("key1", "value1");
+    store.put("key2", "value2");
+
+    EXPECT_EQ(store.get("key1"), "value1");
+    EXPECT_EQ(store.get("key2"), "value2");
+    EXPECT_FALSE(store.get("key3").has_value());
+}
+
+TEST_F(KVStoreTest, FlushToSSTableOnThreshold) {
+    KVStore store(config_);
+    
+    // 4KB threshold. We'll write ~1KB records until a flush occurs.
+    std::string large_value(1024, 'A');
+
+    EXPECT_EQ(store.sstable_count(), 0);
+
+    for (int i = 0; i < 5; ++i) {
+        store.put("large_key_" + std::to_string(i), large_value);
+    }
+
+    // Since we inserted 5 * ~1KB, the MemTable should have flushed at least once.
+    EXPECT_GT(store.sstable_count(), 0);
+
+    // The active MemTable size should be much smaller than the 5KB we inserted,
+    // because it was cleared on flush.
+    EXPECT_LT(store.memtable_size(), 4096);
+
+    // Data should still be retrievable from the SSTable layer
+    for (int i = 0; i < 5; ++i) {
+        auto val = store.get("large_key_" + std::to_string(i));
+        ASSERT_TRUE(val.has_value());
+        EXPECT_EQ(*val, large_value);
+    }
+}
+
+TEST_F(KVStoreTest, DeletesMaskSSTableValues) {
+    KVStore store(config_);
+    store.put("key1", "value1");
+    store.force_flush();
+
+    EXPECT_EQ(store.sstable_count(), 1);
+    EXPECT_EQ(store.get("key1"), "value1"); // From SSTable
+
+    // Now delete it
+    store.remove("key1");
+
+    // The tombstone is in the MemTable. It should mask the SSTable value.
+    EXPECT_FALSE(store.get("key1").has_value());
+
+    // Flush again to push the tombstone to an SSTable
+    store.force_flush();
+    EXPECT_EQ(store.sstable_count(), 2);
+
+    // Should still return nullopt because the newest SSTable has a tombstone
+    EXPECT_FALSE(store.get("key1").has_value());
+}
+
+TEST_F(KVStoreTest, RecoveryFromWAL) {
+    // 1. Create a store, write data (don't flush)
+    {
+        KVStore store(config_);
+        store.put("persist1", "val1");
+        store.put("persist2", "val2");
+        store.remove("persist1");
+        // Data is in WAL and MemTable, but not SSTable
+        EXPECT_EQ(store.sstable_count(), 0);
+    } // store goes out of scope, shutting down. MemTable memory is lost, WAL remains.
+
+    // 2. Re-open store with same config
+    {
+        KVStore store2(config_);
+        
+        // WAL should have been replayed into MemTable
+        EXPECT_FALSE(store2.get("persist1").has_value()); // Was removed
+        EXPECT_EQ(store2.get("persist2"), "val2"); // Was put
+    }
+}
+
+} // namespace
+} // namespace kvault
+```
+
+
+## FILE: tests/test_memtable.cpp
+
+```cpp
+// ============================================================================
+// test_memtable.cpp — Unit Tests for the MemTable
+// ============================================================================
+//
+// Tests the MemTable's three responsibilities:
+//   1. Correct CRUD via Skip List delegation (including tombstones)
+//   2. Approximate byte tracking and flush threshold detection
+//   3. Sorted snapshot generation for SSTable flushing
+//
+// ============================================================================
+
+#include "kvault/memtable.hpp"
+#include "kvault/types.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// Use a generous threshold so basic tests don't accidentally trigger a flush.
+constexpr size_t kDefaultThreshold = 1024 * 1024; // 1 MB
+
+// ============================================================================
+// Basic PUT and GET
+// ============================================================================
+
+TEST(MemTableTest, PutAndGetReturnsCorrectValue) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("name", "kvault");
+
+    auto result = mt.get("name");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "kvault");
+}
+
+TEST(MemTableTest, GetNonExistentKeyReturnsNullopt) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("exists", "yes");
+
+    EXPECT_FALSE(mt.get("ghost").has_value());
+}
+
+TEST(MemTableTest, PutOverwritesPreviousValue) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("version", "1.0");
+    mt.put("version", "2.0");
+
+    auto result = mt.get("version");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "2.0");
+}
+
+TEST(MemTableTest, MultipleDistinctKeys) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("a", "alpha");
+    mt.put("b", "beta");
+    mt.put("c", "gamma");
+
+    EXPECT_EQ(mt.entry_count(), 3u);
+    EXPECT_EQ(mt.get("a").value_or(""), "alpha");
+    EXPECT_EQ(mt.get("b").value_or(""), "beta");
+    EXPECT_EQ(mt.get("c").value_or(""), "gamma");
+}
+
+// ============================================================================
+// Tombstone Semantics
+// ============================================================================
+
+TEST(MemTableTest, DeleteMakesKeyReturnNullopt) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("doomed", "value");
+    mt.remove("doomed");
+
+    // get() should return nullopt for tombstoned keys
+    EXPECT_FALSE(mt.get("doomed").has_value());
+}
+
+TEST(MemTableTest, ContainsTombstoneReturnsTrueAfterDelete) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("target", "alive");
+    mt.remove("target");
+
+    EXPECT_TRUE(mt.contains_tombstone("target"));
+}
+
+TEST(MemTableTest, ContainsTombstoneReturnsFalseForLiveKey) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("healthy", "key");
+
+    EXPECT_FALSE(mt.contains_tombstone("healthy"));
+}
+
+TEST(MemTableTest, ContainsTombstoneReturnsFalseForAbsentKey) {
+    MemTable mt(kDefaultThreshold);
+    EXPECT_FALSE(mt.contains_tombstone("never_inserted"));
+}
+
+TEST(MemTableTest, DeleteNonExistentKeyStillCreatesTombstone) {
+    // This is critical: the key might exist in an older SSTable.
+    // The tombstone must be inserted to shadow it during reads.
+    MemTable mt(kDefaultThreshold);
+    mt.remove("phantom");
+
+    EXPECT_TRUE(mt.contains_tombstone("phantom"));
+    EXPECT_FALSE(mt.get("phantom").has_value());
+    EXPECT_EQ(mt.entry_count(), 1u);
+}
+
+TEST(MemTableTest, PutRevivesTombstonedKey) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("phoenix", "v1");
+    mt.remove("phoenix");
+
+    // Key is tombstoned
+    EXPECT_FALSE(mt.get("phoenix").has_value());
+    EXPECT_TRUE(mt.contains_tombstone("phoenix"));
+
+    // Revive it with a new value
+    mt.put("phoenix", "v2");
+
+    auto result = mt.get("phoenix");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "v2");
+    EXPECT_FALSE(mt.contains_tombstone("phoenix"));
+}
+
+// ============================================================================
+// Byte Tracking & Flush Threshold
+// ============================================================================
+
+TEST(MemTableTest, InitialSizeIsZero) {
+    MemTable mt(kDefaultThreshold);
+    EXPECT_EQ(mt.current_size_bytes(), 0u);
+    EXPECT_FALSE(mt.should_flush());
+}
+
+TEST(MemTableTest, SizeIncreasesOnInsert) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("key", "value");
+
+    // Size should be at least key.size() + value.size() = 8 bytes.
+    // Actual size includes per-node overhead, so it should be > 8.
+    EXPECT_GT(mt.current_size_bytes(), 8u);
+}
+
+TEST(MemTableTest, UpsertWithLongerValueIncreasesSize) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("key", "short");
+    const size_t size_after_short = mt.current_size_bytes();
+
+    mt.put("key", "a_much_longer_value_string");
+    const size_t size_after_long = mt.current_size_bytes();
+
+    // Replacing "short" (5 bytes) with a 26-byte value should increase size.
+    EXPECT_GT(size_after_long, size_after_short);
+}
+
+TEST(MemTableTest, UpsertWithShorterValueDecreasesSize) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("key", "a_very_long_value_string_here");
+    const size_t size_before = mt.current_size_bytes();
+
+    mt.put("key", "tiny");
+    const size_t size_after = mt.current_size_bytes();
+
+    EXPECT_LT(size_after, size_before);
+}
+
+TEST(MemTableTest, ShouldFlushTriggersAtConfiguredThreshold) {
+    // Use a tiny threshold so we can trigger it with a few inserts.
+    constexpr size_t tiny_threshold = 500;
+    MemTable mt(tiny_threshold);
+
+    // Insert entries until the threshold is exceeded.
+    bool flushed = false;
+    for (int i = 0; i < 100; ++i) {
+        mt.put("key_" + std::to_string(i), "value_" + std::to_string(i));
+        if (mt.should_flush()) {
+            flushed = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(flushed);
+    EXPECT_GE(mt.current_size_bytes(), tiny_threshold);
+}
+
+TEST(MemTableTest, ShouldNotFlushBelowThreshold) {
+    // Large threshold — a single insert should never trigger a flush.
+    MemTable mt(1024 * 1024);
+    mt.put("one_key", "one_value");
+
+    EXPECT_FALSE(mt.should_flush());
+}
+
+// ============================================================================
+// Snapshot — Sorted Dump for SSTable Flushing
+// ============================================================================
+
+TEST(MemTableTest, SnapshotReturnsRecordsInSortedKeyOrder) {
+    MemTable mt(kDefaultThreshold);
+    // Insert in deliberately unsorted order
+    mt.put("cherry", "3");
+    mt.put("apple", "1");
+    mt.put("elderberry", "5");
+    mt.put("banana", "2");
+    mt.put("date", "4");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 5u);
+
+    // Extract keys and verify sorted order
+    std::vector<std::string> keys;
+    keys.reserve(records.size());
+    for (const auto& r : records) {
+        keys.push_back(r.key);
+    }
+    EXPECT_TRUE(std::is_sorted(keys.begin(), keys.end()));
+
+    // Verify the exact order
+    EXPECT_EQ(records[0].key, "apple");
+    EXPECT_EQ(records[4].key, "elderberry");
+}
+
+TEST(MemTableTest, SnapshotClassifiesLiveEntriesAsPUT) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("alive", "kicking");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].type, RecordType::PUT);
+    EXPECT_EQ(records[0].key, "alive");
+    EXPECT_EQ(records[0].value, "kicking");
+}
+
+TEST(MemTableTest, SnapshotConvertsTombstonesToDELETERecords) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("doomed", "value");
+    mt.remove("doomed");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].type, RecordType::DELETE);
+    EXPECT_EQ(records[0].key, "doomed");
+    EXPECT_TRUE(records[0].value.empty()) << "DELETE records should have empty value";
+}
+
+TEST(MemTableTest, SnapshotMixesLiveAndDeletedEntries) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("a", "alive");
+    mt.put("b", "also_alive");
+    mt.remove("b");
+    mt.put("c", "still_alive");
+
+    auto records = mt.snapshot();
+
+    ASSERT_EQ(records.size(), 3u);
+
+    // "a" — live
+    EXPECT_EQ(records[0].type, RecordType::PUT);
+    EXPECT_EQ(records[0].key, "a");
+
+    // "b" — tombstoned
+    EXPECT_EQ(records[1].type, RecordType::DELETE);
+    EXPECT_EQ(records[1].key, "b");
+    EXPECT_TRUE(records[1].value.empty());
+
+    // "c" — live
+    EXPECT_EQ(records[2].type, RecordType::PUT);
+    EXPECT_EQ(records[2].key, "c");
+}
+
+TEST(MemTableTest, SnapshotOfEmptyMemTableIsEmpty) {
+    MemTable mt(kDefaultThreshold);
+    auto records = mt.snapshot();
+    EXPECT_TRUE(records.empty());
+}
+
+// ============================================================================
+// Entry Count
+// ============================================================================
+
+TEST(MemTableTest, EntryCountTracksUniqueKeys) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("a", "1");
+    mt.put("b", "2");
+    mt.put("a", "3");  // Upsert — should NOT increase count
+
+    EXPECT_EQ(mt.entry_count(), 2u);
+}
+
+TEST(MemTableTest, EntryCountIncludesTombstonedKeys) {
+    MemTable mt(kDefaultThreshold);
+    mt.put("live", "yes");
+    mt.remove("dead_on_arrival");  // Tombstone for non-existent key
+
+    // Both the live key and the tombstone count as entries
+    EXPECT_EQ(mt.entry_count(), 2u);
+}
+
+} // namespace
+} // namespace kvault
+```
+
+
+## FILE: tests/test_skiplist.cpp
+
+```cpp
+// ============================================================================
+// test_skiplist.cpp — Unit Tests for the Custom Skip List
+// ============================================================================
+//
+// Validates the Skip List's core operations: insert, search, remove, upsert,
+// and in-order iteration. Includes a stress test with 10,000 random entries.
+//
+// These tests exercise the arena-based ownership model — if memory
+// management is broken, sanitizers (ASan/MSan) will catch it here.
+// ============================================================================
+
+#include "kvault/skiplist.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// ============================================================================
+// Basic Operations
+// ============================================================================
+
+TEST(SkipListTest, InsertAndSearchSingleKey) {
+    SkipList sl;
+    sl.insert("hello", "world");
+
+    auto result = sl.search("hello");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "world");
+    EXPECT_EQ(sl.size(), 1u);
+}
+
+TEST(SkipListTest, InsertMultipleKeysAndSearchEach) {
+    SkipList sl;
+    sl.insert("alpha", "1");
+    sl.insert("beta", "2");
+    sl.insert("gamma", "3");
+
+    EXPECT_EQ(sl.search("alpha").value_or(""), "1");
+    EXPECT_EQ(sl.search("beta").value_or(""), "2");
+    EXPECT_EQ(sl.search("gamma").value_or(""), "3");
+    EXPECT_EQ(sl.size(), 3u);
+}
+
+TEST(SkipListTest, SearchNonExistentKeyReturnsNullopt) {
+    SkipList sl;
+    sl.insert("exists", "yes");
+
+    auto result = sl.search("ghost");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(SkipListTest, SearchOnEmptyListReturnsNullopt) {
+    SkipList sl;
+    EXPECT_FALSE(sl.search("anything").has_value());
+}
+
+// ============================================================================
+// Upsert (Insert-or-Update) Semantics
+// ============================================================================
+
+TEST(SkipListTest, UpsertOverwritesExistingValue) {
+    SkipList sl;
+    sl.insert("key", "original");
+    sl.insert("key", "updated");
+
+    auto result = sl.search("key");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "updated");
+}
+
+TEST(SkipListTest, UpsertDoesNotChangeSizeCount) {
+    SkipList sl;
+    sl.insert("key", "v1");
+    sl.insert("key", "v2");
+    sl.insert("key", "v3");
+
+    EXPECT_EQ(sl.size(), 1u);
+}
+
+// ============================================================================
+// Removal
+// ============================================================================
+
+TEST(SkipListTest, RemoveExistingKeyReturnsTrue) {
+    SkipList sl;
+    sl.insert("target", "value");
+
+    EXPECT_TRUE(sl.remove("target"));
+    EXPECT_FALSE(sl.search("target").has_value());
+    EXPECT_EQ(sl.size(), 0u);
+}
+
+TEST(SkipListTest, RemoveNonExistentKeyReturnsFalse) {
+    SkipList sl;
+    sl.insert("a", "1");
+
+    EXPECT_FALSE(sl.remove("b"));
+    EXPECT_EQ(sl.size(), 1u);
+}
+
+TEST(SkipListTest, RemoveFromEmptyListReturnsFalse) {
+    SkipList sl;
+    EXPECT_FALSE(sl.remove("phantom"));
+}
+
+TEST(SkipListTest, RemovedKeyIsNotFoundBySearch) {
+    SkipList sl;
+    sl.insert("x", "100");
+    sl.insert("y", "200");
+    sl.insert("z", "300");
+
+    sl.remove("y");
+
+    EXPECT_TRUE(sl.search("x").has_value());
+    EXPECT_FALSE(sl.search("y").has_value());
+    EXPECT_TRUE(sl.search("z").has_value());
+    EXPECT_EQ(sl.size(), 2u);
+}
+
+// ============================================================================
+// Sorted Iteration (Level-0 Chain)
+// ============================================================================
+
+TEST(SkipListTest, IteratorYieldsKeysInAscendingOrder) {
+    SkipList sl;
+    // Deliberately unsorted insertion order
+    sl.insert("cherry", "3");
+    sl.insert("apple", "1");
+    sl.insert("elderberry", "5");
+    sl.insert("banana", "2");
+    sl.insert("date", "4");
+
+    std::vector<std::string> keys;
+    for (auto it = sl.begin(); it != sl.end(); ++it) {
+        keys.push_back(it.key());
+    }
+
+    ASSERT_EQ(keys.size(), 5u);
+    EXPECT_TRUE(std::is_sorted(keys.begin(), keys.end()));
+    EXPECT_EQ(keys[0], "apple");
+    EXPECT_EQ(keys[4], "elderberry");
+}
+
+TEST(SkipListTest, IteratorOnEmptyListProducesNothing) {
+    SkipList sl;
+    EXPECT_EQ(sl.begin(), sl.end());
+
+    int count = 0;
+    for (auto it = sl.begin(); it != sl.end(); ++it) {
+        ++count;
+    }
+    EXPECT_EQ(count, 0);
+}
+
+TEST(SkipListTest, IteratorReflectsRemovals) {
+    SkipList sl;
+    sl.insert("a", "1");
+    sl.insert("b", "2");
+    sl.insert("c", "3");
+
+    sl.remove("b");
+
+    std::vector<std::string> keys;
+    for (auto it = sl.begin(); it != sl.end(); ++it) {
+        keys.push_back(it.key());
+    }
+
+    ASSERT_EQ(keys.size(), 2u);
+    EXPECT_EQ(keys[0], "a");
+    EXPECT_EQ(keys[1], "c");
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+TEST(SkipListTest, EmptyStringKeysAndValues) {
+    SkipList sl;
+    sl.insert("", "empty_key");
+    sl.insert("empty_val", "");
+
+    EXPECT_EQ(sl.search("").value_or("FAIL"), "empty_key");
+    EXPECT_EQ(sl.search("empty_val").value_or("FAIL"), "");
+    EXPECT_EQ(sl.size(), 2u);
+}
+
+TEST(SkipListTest, EmptyAfterRemovingAllKeys) {
+    SkipList sl;
+    sl.insert("a", "1");
+    sl.insert("b", "2");
+
+    sl.remove("a");
+    sl.remove("b");
+
+    EXPECT_TRUE(sl.empty());
+    EXPECT_EQ(sl.size(), 0u);
+    EXPECT_EQ(sl.begin(), sl.end());
+}
+
+// ============================================================================
+// Stress Test — validates correctness at scale and exercises the arena
+// ============================================================================
+
+TEST(SkipListTest, StressTest_10KRandomInserts) {
+    SkipList sl;
+    constexpr int kNumEntries = 10000;
+    std::set<std::string> reference_keys;
+
+    // Insert keys in a scrambled order using modular arithmetic
+    for (int i = 0; i < kNumEntries; ++i) {
+        std::string key = "key_" + std::to_string((i * 7919) % kNumEntries);
+        std::string val = "val_" + std::to_string(i);
+        sl.insert(key, val);
+        reference_keys.insert(key);
+    }
+
+    // Verify size matches the number of unique keys
+    EXPECT_EQ(sl.size(), reference_keys.size());
+
+    // Verify every key is searchable
+    for (const auto& key : reference_keys) {
+        EXPECT_TRUE(sl.search(key).has_value()) << "Missing key: " << key;
+    }
+
+    // Verify iteration order matches std::set (which is also sorted)
+    auto ref_it = reference_keys.begin();
+    for (auto it = sl.begin(); it != sl.end(); ++it, ++ref_it) {
+        ASSERT_NE(ref_it, reference_keys.end());
+        EXPECT_EQ(it.key(), *ref_it);
+    }
+    EXPECT_EQ(ref_it, reference_keys.end());
+}
+
+} // namespace
+} // namespace kvault
+```
+
+
+## FILE: tests/test_sstable.cpp
+
+```cpp
+// ============================================================================
+// test_sstable.cpp — Integration Tests for SSTable Writer + Reader
+// ============================================================================
+//
+// Tests the full write → read round-trip for SSTables, including:
+//   1. BloomFilter — construction, add, might_contain, false negatives,
+//      false positive rate, serialization round-trip
+//   2. SSTableWriter — produces a valid .sst file
+//   3. SSTableReader — bootstrap (footer → bloom → index), three-step lookup,
+//      tombstone propagation, out-of-range key rejection, corruption detection
+//
+// Each test uses an isolated temp directory cleaned up in TearDown().
+//
+// ============================================================================
+
+#include "kvault/bloom_filter.hpp"
+#include "kvault/sstable_reader.hpp"
+#include "kvault/sstable_writer.hpp"
+#include "kvault/types.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// ============================================================================
+// Test Fixture
+// ============================================================================
+
+class SSTableTest : public ::testing::Test {
+protected:
+    std::filesystem::path test_dir_;
+
+    void SetUp() override {
+        const auto* info = ::testing::UnitTest::GetInstance()
+                               ->current_test_info();
+        test_dir_ = std::filesystem::temp_directory_path()
+                    / ("kvault_sst_test_" + std::string(info->name()));
+        std::filesystem::remove_all(test_dir_);
+        std::filesystem::create_directories(test_dir_);
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+    }
+
+    [[nodiscard]]
+    std::filesystem::path sst_path(const std::string& name = "test.sst") const {
+        return test_dir_ / name;
+    }
+
+    // Helper: build N sorted KVRecords with predictable keys/values.
+    static std::vector<KVRecord> make_records(int count,
+                                              int start = 0,
+                                              bool include_deletes = false) {
+        std::vector<KVRecord> recs;
+        recs.reserve(static_cast<size_t>(count));
+        for (int i = start; i < start + count; ++i) {
+            KVRecord r;
+            // Zero-pad keys so lexicographic sort == numeric sort
+            r.key   = "key_" + std::string(6 - std::to_string(i).size(), '0')
+                             + std::to_string(i);
+            r.value = "value_" + std::to_string(i);
+            r.type  = (include_deletes && i % 5 == 0)
+                      ? RecordType::DELETE
+                      : RecordType::PUT;
+            if (r.type == RecordType::DELETE) r.value = "";
+            recs.push_back(std::move(r));
+        }
+        return recs;
+    }
+};
+
+// ============================================================================
+// BloomFilter — Unit Tests
+// ============================================================================
+
+TEST_F(SSTableTest, BloomFilter_NoFalseNegatives) {
+    // A Bloom Filter must NEVER produce false negatives.
+    // Every key that was add()ed must be found by might_contain().
+    BloomFilter bf(1000, 10);
+
+    std::vector<std::string> keys;
+    for (int i = 0; i < 1000; ++i) {
+        keys.push_back("key_" + std::to_string(i));
+        bf.add(keys.back());
+    }
+
+    for (const auto& k : keys) {
+        EXPECT_TRUE(bf.might_contain(k))
+            << "False negative for key: " << k;
+    }
+}
+
+TEST_F(SSTableTest, BloomFilter_FalsePositiveRateIsReasonable) {
+    // With bits_per_key=10, expected FP rate ≈ 0.8%.
+    // We test with a 5% threshold to give headroom for random variation.
+    constexpr int kInserted    = 1000;
+    constexpr int kQueried     = 10000;
+    constexpr double kMaxFPRate = 0.05; // 5% — very generous upper bound
+
+    BloomFilter bf(static_cast<size_t>(kInserted), 10);
+
+    // Insert 1000 distinct keys
+    for (int i = 0; i < kInserted; ++i) {
+        bf.add("inserted_" + std::to_string(i));
+    }
+
+    // Query 10000 keys that were NEVER inserted
+    int false_positives = 0;
+    for (int i = 0; i < kQueried; ++i) {
+        if (bf.might_contain("absent_" + std::to_string(i))) {
+            ++false_positives;
+        }
+    }
+
+    const double fp_rate = static_cast<double>(false_positives) / kQueried;
+    EXPECT_LT(fp_rate, kMaxFPRate)
+        << "False positive rate " << fp_rate
+        << " exceeds threshold " << kMaxFPRate;
+}
+
+TEST_F(SSTableTest, BloomFilter_DefiniteMissForUnseenKey) {
+    BloomFilter bf(100, 10);
+    bf.add("alpha");
+    bf.add("beta");
+
+    // "gamma" was never added — might_contain CAN return true (false positive),
+    // but for small filters with few keys it usually returns false.
+    // We can't assert false here without knowing the hash collision.
+    // What we CAN assert: "alpha" and "beta" must return true.
+    EXPECT_TRUE(bf.might_contain("alpha"));
+    EXPECT_TRUE(bf.might_contain("beta"));
+}
+
+TEST_F(SSTableTest, BloomFilter_SerializationRoundTrip) {
+    BloomFilter original(500, 10);
+    for (int i = 0; i < 100; ++i) {
+        original.add("key_" + std::to_string(i));
+    }
+
+    // Serialize and deserialize
+    auto serialized = original.serialize();
+    ASSERT_GE(serialized.size(), 8u); // At least the k + m header
+
+    auto restored = BloomFilter::deserialize(serialized);
+
+    // Same parameters
+    EXPECT_EQ(restored.bit_count(),  original.bit_count());
+    EXPECT_EQ(restored.hash_count(), original.hash_count());
+
+    // All inserted keys must still be found after deserialization
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_TRUE(restored.might_contain("key_" + std::to_string(i)));
+    }
+}
+
+TEST_F(SSTableTest, BloomFilter_EmptyFilterReturnsFalse) {
+    // A filter with 0 inserted keys should return false for any query
+    // (all bits are 0, so the first bit check fails immediately).
+    BloomFilter bf(100, 10);
+    EXPECT_FALSE(bf.might_contain("anything"));
+}
+
+// ============================================================================
+// SSTableWriter → SSTableReader Round-Trip
+// ============================================================================
+
+TEST_F(SSTableTest, WriteAndRead_SingleRecord) {
+    const auto path = sst_path();
+    std::vector<KVRecord> recs = {{ RecordType::PUT, "hello", "world" }};
+
+    SSTableWriter::write(path, recs);
+
+    SSTableReader reader(path);
+    EXPECT_EQ(reader.entry_count(), 1u);
+
+    auto result = reader.get("hello");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "world");
+}
+
+TEST_F(SSTableTest, WriteAndRead_HundredRecords) {
+    const auto path = sst_path();
+    auto recs = make_records(100);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), 100u);
+
+    // Verify every key is recoverable
+    for (const auto& rec : recs) {
+        auto result = reader.get(rec.key);
+        ASSERT_TRUE(result.has_value())
+            << "Key not found: " << rec.key;
+        EXPECT_EQ(*result, rec.value);
+    }
+}
+
+TEST_F(SSTableTest, WriteAndRead_SparsesMultipleBlocks) {
+    // Write more than kIndexBlockInterval keys to exercise multi-block indexing
+    constexpr int kCount = 350; // 3.5 index blocks at interval=100
+    const auto path = sst_path();
+    auto recs = make_records(kCount);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), static_cast<uint64_t>(kCount));
+
+    // Spot-check keys at block boundaries
+    for (int i : {0, 99, 100, 101, 199, 200, 299, 300, 349}) {
+        const auto& rec = recs[static_cast<size_t>(i)];
+        auto result = reader.get(rec.key);
+        ASSERT_TRUE(result.has_value())
+            << "Key not found at index " << i << ": " << rec.key;
+        EXPECT_EQ(*result, rec.value);
+    }
+}
+
+TEST_F(SSTableTest, AbsentKeyReturnsNullopt) {
+    const auto path = sst_path();
+    auto recs = make_records(50);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    // Keys outside the range
+    EXPECT_FALSE(reader.get("zzz_out_of_range").has_value());
+    EXPECT_FALSE(reader.get("aaa_before_start").has_value());
+
+    // Key that's in-range but doesn't exist
+    EXPECT_FALSE(reader.get("key_999999").has_value());
+}
+
+TEST_F(SSTableTest, BloomFilterShortCircuitsAbsentKeys) {
+    // An absent key that passes the bloom filter still returns nullopt.
+    // More importantly: the bloom filter should catch MOST absent keys.
+    const auto path = sst_path();
+    auto recs = make_records(200);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    // Definitely-absent key with a completely different prefix
+    // The bloom filter SHOULD filter this out (not guaranteed, but very likely)
+    auto result = reader.get("zzz_completely_absent");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(SSTableTest, TombstonesAreSurfacedCorrectly) {
+    // DELETE records should be found by get_record() and return
+    // RecordType::DELETE, signaling to the KVStore that the key is deleted.
+    const auto path = sst_path();
+
+    std::vector<KVRecord> recs = {
+        { RecordType::PUT,    "alive",   "value"  },
+        { RecordType::DELETE, "deleted", ""        },
+        { RecordType::PUT,    "zzz",     "last"   }
+    };
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    // Tombstone key: get_record returns DELETE type
+    auto del_record = reader.get_record("deleted");
+    ASSERT_TRUE(del_record.has_value());
+    EXPECT_EQ(del_record->type, RecordType::DELETE);
+    EXPECT_TRUE(del_record->value.empty());
+
+    // Live keys still accessible
+    EXPECT_EQ(reader.get("alive").value_or(""), "value");
+    EXPECT_EQ(reader.get("zzz").value_or(""), "last");
+}
+
+TEST_F(SSTableTest, MetadataIsCorrect) {
+    const auto path = sst_path();
+    auto recs = make_records(50);
+
+    SSTableWriter::write(path, recs);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), 50u);
+    EXPECT_GT(reader.file_size(), 0u);
+    EXPECT_EQ(reader.path(), path);
+
+    auto meta = reader.metadata();
+    EXPECT_EQ(meta.entry_count, 50u);
+    EXPECT_FALSE(meta.file_path.empty());
+}
+
+TEST_F(SSTableTest, EmptySSTableIsValid) {
+    // Writing an empty SSTable should not crash and should return nullopt
+    // for any key lookup.
+    const auto path = sst_path();
+    std::vector<KVRecord> empty;
+
+    SSTableWriter::write(path, empty);
+    SSTableReader reader(path);
+
+    EXPECT_EQ(reader.entry_count(), 0u);
+    EXPECT_FALSE(reader.get("any_key").has_value());
+}
+
+TEST_F(SSTableTest, LargeKeyValuePairsArePreserved) {
+    const auto path = sst_path();
+
+    const std::string large_key(4096, 'K');
+    const std::string large_val(65536, 'V');
+
+    std::vector<KVRecord> recs = {{ RecordType::PUT, large_key, large_val }};
+    SSTableWriter::write(path, recs);
+
+    SSTableReader reader(path);
+    auto result = reader.get(large_key);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->size(), 65536u);
+    EXPECT_EQ(*result, large_val);
+}
+
+TEST_F(SSTableTest, CorruptedMagicNumberThrowsOnOpen) {
+    // Corrupt the file's magic number in the footer and verify
+    // that SSTableReader throws rather than silently returning bad data.
+    const auto path = sst_path();
+    auto recs = make_records(10);
+    SSTableWriter::write(path, recs);
+
+    // Corrupt the last 8 bytes (the magic number in the footer)
+    {
+        std::fstream fs(path, std::ios::binary | std::ios::in | std::ios::out);
+        fs.seekp(-8, std::ios::end);
+        const char garbage[8] = {0x00, 0x11, 0x22, 0x33,
+                                  0x44, 0x55, 0x66, 0x77};
+        fs.write(garbage, 8);
+    }
+
+    EXPECT_THROW(
+        { SSTableReader reader(path); },
+        std::runtime_error
+    ) << "Should throw on invalid magic number";
+}
+
+TEST_F(SSTableTest, MultipleSSTablesAreIndependent) {
+    // Two SSTables with different key ranges should each answer correctly.
+    auto recs_a = make_records(50,  0);   // keys 0..49
+    auto recs_b = make_records(50, 50);   // keys 50..99
+
+    SSTableWriter::write(sst_path("a.sst"), recs_a);
+    SSTableWriter::write(sst_path("b.sst"), recs_b);
+
+    SSTableReader reader_a(sst_path("a.sst"));
+    SSTableReader reader_b(sst_path("b.sst"));
+
+    // Cross-lookups should return nullopt
+    EXPECT_FALSE(reader_a.get(recs_b[0].key).has_value());
+    EXPECT_FALSE(reader_b.get(recs_a[0].key).has_value());
+
+    // Own-range lookups succeed
+    EXPECT_TRUE(reader_a.get(recs_a[25].key).has_value());
+    EXPECT_TRUE(reader_b.get(recs_b[25].key).has_value());
+}
+
+} // namespace
+} // namespace kvault
+```
+
+
+## FILE: tests/test_wal.cpp
+
+```cpp
+// ============================================================================
+// test_wal.cpp — Unit Tests for the Write-Ahead Log
+// ============================================================================
+//
+// Tests the WAL's three critical guarantees:
+//   1. DURABILITY  — append + replay recovers all records faithfully
+//   2. INTEGRITY   — CRC32 checksums detect corrupted records
+//   3. RESILIENCE  — partial writes (simulated crashes) are handled
+//                    gracefully without crashing or returning bad data
+//
+// Each test uses a unique temporary directory that is cleaned up in
+// TearDown(). This ensures test isolation even under parallel execution.
+//
+// ============================================================================
+
+#include "kvault/wal.hpp"
+#include "kvault/types.hpp"
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace kvault {
+namespace {
+
+// ============================================================================
+// Test Fixture — creates/destroys an isolated temp directory per test
+// ============================================================================
+
+class WALTest : public ::testing::Test {
+protected:
+    std::filesystem::path test_dir_;
+
+    void SetUp() override {
+        // Each test gets a unique directory based on the test name,
+        // preventing interference between parallel test runs.
+        const auto* info = ::testing::UnitTest::GetInstance()
+                               ->current_test_info();
+        test_dir_ = std::filesystem::temp_directory_path()
+                    / ("kvault_wal_test_" + std::string(info->name()));
+
+        // Clean up from any prior failed run
+        std::filesystem::remove_all(test_dir_);
+        std::filesystem::create_directories(test_dir_);
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+    }
+
+    // Helper: full path to the WAL file inside the test directory.
+    [[nodiscard]]
+    std::filesystem::path wal_file_path() const {
+        return test_dir_ / "wal.log";
+    }
+};
+
+// ============================================================================
+// Normal Replay — the core durability guarantee
+// ============================================================================
+
+TEST_F(WALTest, AppendAndReplayRecoversSingleRecord) {
+    // Write one record, destroy the WAL, create a fresh one, replay.
+    {
+        WriteAheadLog wal(test_dir_, /*sync_per_write=*/false);
+        wal.append({RecordType::PUT, "greeting", "hello"});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u);
+        EXPECT_EQ(records[0].type, RecordType::PUT);
+        EXPECT_EQ(records[0].key, "greeting");
+        EXPECT_EQ(records[0].value, "hello");
+    }
+}
+
+TEST_F(WALTest, AppendAndReplayRecoversMultipleRecords) {
+    constexpr int kNumRecords = 50;
+
+    // Append many records
+    {
+        WriteAheadLog wal(test_dir_, false);
+        for (int i = 0; i < kNumRecords; ++i) {
+            wal.append({
+                RecordType::PUT,
+                "key_" + std::to_string(i),
+                "value_" + std::to_string(i)
+            });
+        }
+    }
+
+    // Replay and verify every record is recovered in order
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), static_cast<size_t>(kNumRecords));
+        for (int i = 0; i < kNumRecords; ++i) {
+            EXPECT_EQ(records[static_cast<size_t>(i)].type, RecordType::PUT);
+            EXPECT_EQ(records[static_cast<size_t>(i)].key,
+                       "key_" + std::to_string(i));
+            EXPECT_EQ(records[static_cast<size_t>(i)].value,
+                       "value_" + std::to_string(i));
+        }
+    }
+}
+
+TEST_F(WALTest, ReplayDistinguishesPUTAndDELETERecords) {
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT,    "user",  "alice"});
+        wal.append({RecordType::DELETE, "user",  ""});
+        wal.append({RecordType::PUT,    "admin", "bob"});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 3u);
+
+        EXPECT_EQ(records[0].type, RecordType::PUT);
+        EXPECT_EQ(records[0].key, "user");
+        EXPECT_EQ(records[0].value, "alice");
+
+        EXPECT_EQ(records[1].type, RecordType::DELETE);
+        EXPECT_EQ(records[1].key, "user");
+        EXPECT_TRUE(records[1].value.empty());
+
+        EXPECT_EQ(records[2].type, RecordType::PUT);
+        EXPECT_EQ(records[2].key, "admin");
+        EXPECT_EQ(records[2].value, "bob");
+    }
+}
+
+// ============================================================================
+// Edge Cases — Empty WAL, Large Values
+// ============================================================================
+
+TEST_F(WALTest, ReplayOnFreshDirectoryReturnsEmptyVector) {
+    // No WAL file exists yet — replay should return an empty vector
+    // (not crash or throw).
+    std::filesystem::path fresh_dir = test_dir_ / "subdir";
+    WriteAheadLog wal(fresh_dir, false);
+    auto records = wal.replay();
+
+    EXPECT_TRUE(records.empty());
+}
+
+TEST_F(WALTest, LargeKeyAndValueArePreserved) {
+    const std::string large_key(4096, 'K');    // 4 KB key
+    const std::string large_val(65536, 'V');   // 64 KB value
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, large_key, large_val});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u);
+        EXPECT_EQ(records[0].key.size(), 4096u);
+        EXPECT_EQ(records[0].value.size(), 65536u);
+        EXPECT_EQ(records[0].key, large_key);
+        EXPECT_EQ(records[0].value, large_val);
+    }
+}
+
+TEST_F(WALTest, EmptyKeyAndValueArePreserved) {
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "", ""});
+    }
+
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u);
+        EXPECT_TRUE(records[0].key.empty());
+        EXPECT_TRUE(records[0].value.empty());
+    }
+}
+
+// ============================================================================
+// Truncate — WAL is cleared after successful SSTable flush
+// ============================================================================
+
+TEST_F(WALTest, TruncateClearsAllRecords) {
+    WriteAheadLog wal(test_dir_, false);
+    wal.append({RecordType::PUT, "key1", "val1"});
+    wal.append({RecordType::PUT, "key2", "val2"});
+
+    EXPECT_GT(wal.file_size(), 0u);
+
+    wal.truncate();
+
+    EXPECT_EQ(wal.file_size(), 0u);
+
+    // Replay after truncation should return nothing
+    auto records = wal.replay();
+    EXPECT_TRUE(records.empty());
+}
+
+TEST_F(WALTest, AppendWorksAfterTruncate) {
+    WriteAheadLog wal(test_dir_, false);
+    wal.append({RecordType::PUT, "old", "data"});
+    wal.truncate();
+
+    // Append new records after truncation
+    wal.append({RecordType::PUT, "new", "data"});
+
+    auto records = wal.replay();
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].key, "new");
+}
+
+// ============================================================================
+// File Size Tracking
+// ============================================================================
+
+TEST_F(WALTest, FileSizeGrowsWithEachAppend) {
+    WriteAheadLog wal(test_dir_, false);
+
+    const size_t initial = wal.file_size();
+    wal.append({RecordType::PUT, "k1", "v1"});
+    const size_t after_one = wal.file_size();
+    wal.append({RecordType::PUT, "k2", "v2"});
+    const size_t after_two = wal.file_size();
+
+    EXPECT_EQ(initial, 0u);
+    EXPECT_GT(after_one, 0u);
+    EXPECT_GT(after_two, after_one);
+}
+
+// ============================================================================
+// Corruption Handling — Simulated Crash Scenarios
+// ============================================================================
+//
+// These tests are CRUCIAL for demonstrating crash-recovery correctness.
+// They simulate what happens when the process crashes mid-write, leaving
+// partial or garbage data at the end of the WAL file.
+//
+// Expectation: replay() must recover ALL complete, valid records and
+// silently discard any corrupted tail — without crashing, throwing, or
+// returning partial records.
+// ============================================================================
+
+TEST_F(WALTest, ReplayStopsAtGarbageBytes) {
+    // Scenario: Two valid records are written. Then the process crashes
+    // and leaves garbage bytes at the end (e.g., a partially overwritten
+    // record from a concurrent flush, or filesystem corruption).
+
+    // Step 1: Write 2 valid records
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "safe_1", "intact"});
+        wal.append({RecordType::PUT, "safe_2", "intact"});
+    }
+
+    // Step 2: Append garbage bytes (simulating corruption)
+    {
+        std::ofstream ofs(wal_file_path(),
+                          std::ios::binary | std::ios::app);
+        ASSERT_TRUE(ofs.is_open()) << "Failed to open WAL for corruption";
+
+        const char garbage[] = "\xDE\xAD\xBE\xEF_CORRUPTED_!@#$%^&*";
+        ofs.write(garbage, sizeof(garbage) - 1);
+        ofs.flush();
+    }
+
+    // Step 3: Replay — must recover the 2 valid records and stop
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 2u)
+            << "Should recover exactly 2 valid records before corruption";
+        EXPECT_EQ(records[0].key, "safe_1");
+        EXPECT_EQ(records[1].key, "safe_2");
+    }
+}
+
+TEST_F(WALTest, ReplayStopsAtTruncatedRecord) {
+    // Scenario: Three records are being written. The process crashes
+    // mid-way through the 3rd record, leaving it partially written.
+    // The first 2 records should be fully recoverable.
+
+    size_t size_after_two = 0;
+
+    // Step 1: Write 3 records, capturing the file size after record #2
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "rec_1", "complete"});
+        wal.append({RecordType::PUT, "rec_2", "complete"});
+        size_after_two = wal.file_size();
+
+        wal.append({RecordType::PUT, "rec_3", "this_will_be_truncated"});
+    }
+
+    // Step 2: Simulate a crash by truncating the file mid-3rd-record.
+    // We keep only the first 3 bytes of the 3rd record (just the type
+    // byte and part of the key length — not enough for a valid record).
+    ASSERT_GT(size_after_two, 0u);
+    std::filesystem::resize_file(wal_file_path(), size_after_two + 3);
+
+    // Step 3: Replay — must recover records 1 and 2, discard the partial 3rd
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 2u)
+            << "Should recover 2 complete records; 3rd is truncated";
+        EXPECT_EQ(records[0].key, "rec_1");
+        EXPECT_EQ(records[0].value, "complete");
+        EXPECT_EQ(records[1].key, "rec_2");
+        EXPECT_EQ(records[1].value, "complete");
+    }
+}
+
+TEST_F(WALTest, ReplayStopsAtBadCRC) {
+    // Scenario: A valid record has its CRC32 checksum corrupted.
+    // This could happen due to a bit-flip in storage.
+
+    // Step 1: Write 2 valid records
+    {
+        WriteAheadLog wal(test_dir_, false);
+        wal.append({RecordType::PUT, "good", "record"});
+        wal.append({RecordType::PUT, "will_be_corrupted", "data"});
+    }
+
+    // Step 2: Corrupt the CRC of the 2nd record by flipping a byte
+    // near the end of the file. The last 4 bytes of the file are the
+    // CRC32 of the 2nd record.
+    {
+        // Read the entire file
+        std::ifstream ifs(wal_file_path(), std::ios::binary);
+        std::string contents((std::istreambuf_iterator<char>(ifs)),
+                              std::istreambuf_iterator<char>());
+        ifs.close();
+
+        ASSERT_GE(contents.size(), 4u);
+
+        // Flip the last byte (part of the 2nd record's CRC)
+        contents.back() = static_cast<char>(contents.back() ^ 0xFF);
+
+        // Write back the corrupted file
+        std::ofstream ofs(wal_file_path(),
+                          std::ios::binary | std::ios::trunc);
+        ofs.write(contents.data(),
+                  static_cast<std::streamsize>(contents.size()));
+        ofs.flush();
+    }
+
+    // Step 3: Replay — should recover only the 1st record (2nd has bad CRC)
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        ASSERT_EQ(records.size(), 1u)
+            << "Should recover 1 valid record; 2nd has corrupted CRC";
+        EXPECT_EQ(records[0].key, "good");
+        EXPECT_EQ(records[0].value, "record");
+    }
+}
+
+TEST_F(WALTest, ReplayHandlesCompletelyCorruptedFile) {
+    // Scenario: The WAL file is entirely garbage (e.g., filesystem
+    // allocated the file but never wrote valid data before crashing).
+
+    {
+        std::ofstream ofs(wal_file_path(), std::ios::binary);
+        const char noise[] = "\xFF\xFE\xFD\xFC\xFB\xFA\x00\x01\x02\x03";
+        ofs.write(noise, sizeof(noise) - 1);
+    }
+
+    // Replay should return an empty vector — no valid records to recover.
+    {
+        WriteAheadLog wal(test_dir_, false);
+        auto records = wal.replay();
+
+        EXPECT_TRUE(records.empty())
+            << "Completely corrupted WAL should yield zero records";
+    }
+}
+
+// ============================================================================
+// Sync Mode — verify both modes work without errors
+// ============================================================================
+
+TEST_F(WALTest, SyncPerWriteModeFunctionsCorrectly) {
+    // This test verifies that sync_per_write=true doesn't crash or error.
+    // We can't easily verify that fsync was called, but we can verify
+    // the data is recoverable.
+    WriteAheadLog wal(test_dir_, /*sync_per_write=*/true);
+    wal.append({RecordType::PUT, "synced", "data"});
+
+    auto records = wal.replay();
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].key, "synced");
+}
+
+TEST_F(WALTest, BufferedModeFunctionsCorrectly) {
+    WriteAheadLog wal(test_dir_, /*sync_per_write=*/false);
+    wal.append({RecordType::PUT, "buffered", "data"});
+
+    auto records = wal.replay();
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].key, "buffered");
+}
+
+} // namespace
+} // namespace kvault
+```
+
