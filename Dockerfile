@@ -1,20 +1,17 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Avoid tzdata interactive prompt during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
+# Install build dependencies (Ubuntu 24.04 natively comes with gcc-13 as default)
 RUN apt-get update && apt-get install -y \
-    g++-13 \
+    g++ \
+    gcc \
     cmake \
     ninja-build \
     git \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Set g++-13 as the default compiler
-RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 13 \
-    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 13
 
 # Set the working directory
 WORKDIR /app
