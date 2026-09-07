@@ -27,12 +27,8 @@ void ApiServer::stop() {
 
 void ApiServer::setup_routes() {
     
-    // Explicitly handle CORS preflight OPTIONS requests for all routes to prevent 502 Bad Gateway
-    // (We return 200 "OK" instead of 204 because Render/Cloudflare drops 204s without Content-Length)
-    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::OPTIONS)([](const std::string&) { return crow::response(200, "OK"); });
-    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(200, "OK"); });
-    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(200, "OK"); });
-    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(200, "OK"); });
+    // OPTIONS requests and 404s are natively handled by Crow, but modified by FixEmptyResponseMiddleware
+    // to include a valid 200 OK or 404 body so Cloudflare doesn't throw 502 Bad Gateway.
 
     // GET /api/kv/<key>
     CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
