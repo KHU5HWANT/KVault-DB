@@ -4,7 +4,8 @@
 
 #include <iostream>
 #include <memory>
-
+#include <cstdlib>
+#include <string>
 int main(int argc, char* argv[]) {
     std::cout << "Starting KVault Engine...\n";
 
@@ -25,6 +26,11 @@ int main(int argc, char* argv[]) {
         config.wal_directory = base_dir + "/wal";
         config.sstable_directory = base_dir + "/sstables";
         config.server_port = 8080;
+        if (const char* env_p = std::getenv("PORT")) {
+            try {
+                config.server_port = std::stoi(env_p);
+            } catch (...) {}
+        }
 
         auto store = std::make_shared<kvault::KVStore>(config);
         
