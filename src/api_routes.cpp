@@ -13,6 +13,14 @@ ApiServer::ApiServer(std::shared_ptr<KVStore> store, uint16_t port)
         .origin("*");
 
     setup_routes();
+
+    // Handle CORS preflight requests explicitly to prevent 502 Bad Gateway
+    CROW_CATCHALL_ROUTE(app_)
+        .methods(crow::HTTPMethod::OPTIONS)
+        ([](const crow::request&, crow::response& res) {
+            res.code = 204;
+            res.end();
+        });
 }
 
 void ApiServer::run() {
