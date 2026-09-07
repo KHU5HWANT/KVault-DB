@@ -45,3 +45,8 @@ This file tracks important technical discussions, architectural decisions, and c
 - Discovered via user screenshot that Hugging Face now restricts new Docker Spaces to PRO (paid) accounts.
 - Because the user does not have a credit card, pivoted the deployment strategy back to Render.com.
 - Confirmed that the existing Dockerfile will work perfectly on Render, and they can host multiple free web services on a single Render account (sharing the 750 free hours/month pool).
+
+## [2026-09-08] Render Dynamic Port Binding
+- Render dynamically assigns a port via the `$PORT` environment variable.
+- The C++ server was hardcoded to bind to `8080`, causing Render's health checks to fail and the server to exit after 6 seconds.
+- Fixed the issue by using `<cstdlib>` and `std::getenv("PORT")` in `main.cpp` to dynamically bind to the cloud provider's assigned port, ensuring successful PaaS deployment.

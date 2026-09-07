@@ -1308,4 +1308,17 @@ config.sstable_directory = base_dir + "/sstables";
 config.server_port = 7860; // Modified for Hugging Face Spaces compatibility
 \end{lstlisting}
 
+\subsection{Dynamic Port Binding (PaaS Constraints)}
+A critical architectural consideration when deploying to Platform-as-a-Service (PaaS) providers like Render or Heroku is that the deployment environment dynamically assigns the external port via an environment variable (typically \texttt{PORT}). Hardcoding a standard port (e.g., 8080) will result in health check failures, as the container will be isolated from the platform's ingress router.
+
+To satisfy this constraint, KVault implements dynamic port resolution during engine initialization using the \texttt{<cstdlib>} library:
+\begin{lstlisting}[language=C++]
+if (const char* env_p = std::getenv("PORT")) {
+    try {
+        config.server_port = std::stoi(env_p);
+    } catch (...) {}
+}
+\end{lstlisting}
+This allows the internal Crow API to transparently bind to the dynamically provisioned port, ensuring the platform's load balancers can correctly route external requests to the containerized C++ engine.
+
 \end{document}
