@@ -13,14 +13,6 @@ ApiServer::ApiServer(std::shared_ptr<KVStore> store, uint16_t port)
         .origin("*");
 
     setup_routes();
-
-    // Handle CORS preflight requests explicitly to prevent 502 Bad Gateway
-    CROW_CATCHALL_ROUTE(app_)
-        .methods(crow::HTTPMethod::OPTIONS)
-        ([](const crow::request&, crow::response& res) {
-            res.code = 204;
-            res.end();
-        });
 }
 
 void ApiServer::run() {
@@ -35,6 +27,12 @@ void ApiServer::stop() {
 
 void ApiServer::setup_routes() {
     
+    // Explicitly handle CORS preflight OPTIONS requests for all routes to prevent 502 Bad Gateway
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::OPTIONS)([](const std::string&) { return crow::response(204); });
+    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(204); });
+    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(204); });
+    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(204); });
+
     // GET /api/kv/<key>
     CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
         [this](const std::string& key) {
