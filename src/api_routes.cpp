@@ -28,10 +28,11 @@ void ApiServer::stop() {
 void ApiServer::setup_routes() {
     
     // Explicitly handle CORS preflight OPTIONS requests for all routes to prevent 502 Bad Gateway
-    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::OPTIONS)([](const std::string&) { return crow::response(204); });
-    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(204); });
-    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(204); });
-    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(204); });
+    // (We return 200 "OK" instead of 204 because Render/Cloudflare drops 204s without Content-Length)
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::OPTIONS)([](const std::string&) { return crow::response(200, "OK"); });
+    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(200, "OK"); });
+    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(200, "OK"); });
+    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::OPTIONS)([]() { return crow::response(200, "OK"); });
 
     // GET /api/kv/<key>
     CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
