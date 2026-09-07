@@ -3,18 +3,18 @@ FROM ubuntu:24.04
 # Avoid tzdata interactive prompt during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies (Using clang instead of gcc to save massive amounts of RAM during compilation)
+# Install build dependencies (Ubuntu 24.04 natively comes with gcc-13 as default)
 RUN apt-get update && apt-get install -y \
-    clang \
+    g++ \
+    gcc \
     cmake \
     ninja-build \
     git \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Clang as the default compiler to prevent OOM
-ENV CC=clang
-ENV CXX=clang++
+# Force GCC to aggressively garbage collect to keep RAM usage under 512MB
+ENV CXXFLAGS="-Os -g0 --param ggc-min-expand=1 --param ggc-min-heapsize=32768"
 
 # Set the working directory
 WORKDIR /app
