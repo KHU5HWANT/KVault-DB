@@ -19,9 +19,10 @@ WORKDIR /app
 # Copy the project files
 COPY . .
 
-# Configure and Build the project
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-RUN cmake --build build --parallel
+# Configure and Build the project (Skip tests in production to save RAM)
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+# Run strictly sequential build (-j 1) to prevent Render's 512MB RAM limit from triggering the OOM killer
+RUN cmake --build build -j 1 --target kvault_server
 
 # Render expects web services to listen on port 8080 by default (or via PORT env var)
 EXPOSE 8080
