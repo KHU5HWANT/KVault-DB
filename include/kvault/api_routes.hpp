@@ -14,10 +14,14 @@ struct FixEmptyResponseMiddleware {
         // Render/Cloudflare strictly drops 204 No Content or empty 404s from Crow, throwing 502 Bad Gateway.
         if (req.method == crow::HTTPMethod::OPTIONS) {
             res.code = 200;
-            if (res.body.empty()) res.body = "OK";
+            res.body = "OK";
+            res.set_header("Content-Length", "2");
+            res.manual_length_header = true;
         }
         if (res.code == 404 && res.body.empty()) {
             res.body = "Not Found";
+            res.set_header("Content-Length", "9");
+            res.manual_length_header = true;
         }
     }
 };
