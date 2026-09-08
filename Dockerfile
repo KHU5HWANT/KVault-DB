@@ -1,4 +1,5 @@
 FROM ubuntu:24.04
+# Cache-bust: 2026-09-09-v3 (before_handle OPTIONS fix + .env.production)
 
 # Avoid tzdata interactive prompt during package installation
 ENV DEBIAN_FRONTEND=noninteractive

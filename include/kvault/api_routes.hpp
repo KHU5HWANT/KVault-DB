@@ -9,19 +9,20 @@ namespace kvault {
 
 struct FixEmptyResponseMiddleware {
     struct context {};
+    
     void before_handle(crow::request& /*req*/, crow::response& /*res*/, context& /*ctx*/) {}
+    
     void after_handle(crow::request& req, crow::response& res, context& /*ctx*/) {
-        // Render/Cloudflare strictly drops 204 No Content or empty 404s from Crow, throwing 502 Bad Gateway.
+        // Crow's router hardcodes 204 No Content for OPTIONS.
+        // Cloudflare/Render drops 204 responses and returns 502 Bad Gateway.
+        // Fix: force 200 OK with a body so the proxy accepts it.
         if (req.method == crow::HTTPMethod::OPTIONS) {
             res.code = 200;
             res.body = "OK";
-            res.set_header("Content-Length", "2");
-            res.manual_length_header = true;
         }
+        // Fix empty 404s (Crow's global 404 handler has no body)
         if (res.code == 404 && res.body.empty()) {
             res.body = "Not Found";
-            res.set_header("Content-Length", "9");
-            res.manual_length_header = true;
         }
     }
 };
