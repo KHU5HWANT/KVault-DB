@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     git \
     libssl-dev \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Force GCC to aggressively garbage collect to keep RAM usage under 512MB
