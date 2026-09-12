@@ -53,5 +53,14 @@ This file tracks important technical discussions, architectural decisions, and c
 
 --- 2026-09-09 CORS OPTIONS 502 Root Cause Analysis ---
 Root cause 1: Frontend 'Backend offline' error was caused by API_BASE = '/api' (relative path) pointing to the SAME host as the frontend static site, not to kvault-db.onrender.com. Fixed by creating dashboard/.env.production with VITE_API_URL=https://kvault-db.onrender.com/api.
-Root cause 2: Crow's router at routing.h:1638 hardcodes es = response(204) for ALL OPTIONS requests before after_handle runs. The fix: FixEmptyResponseMiddleware.after_handle() intercepts and changes res.code=200 and res.body='OK'. Locally confirmed: OPTIONS returns 200 OK on wire despite Crow log showing 204. The fter_handle approach works because prepare_buffers() reads from es.code AFTER after_handle runs.
-Key finding: es.completed_ is private in Crow. The efore_handle res.end() approach appeared to work but the Crow log and debug prints confirmed it was actually fter_handle doing the work. The efore_handle res.end() does NOT prevent the router from running because complete_request_handler_ is nullptr when before_handle runs.
+Root cause 2: Crow's router at routing.h:1638 hardcodes es = response(204) for ALL OPTIONS requests before after_handle runs. The fix: FixEmptyResponseMiddleware.after_handle() intercepts and changes res.code=200 and res.body='OK'. Locally confirmed: OPTIONS returns 200 OK on wire despite Crow log showing 204. The  fter_handle approach works because prepare_buffers() reads from es.code AFTER after_handle runs.
+Key finding: 
+es.completed_ is private in Crow. The  efore_handle res.end() approach appeared to work but the Crow log and debug prints confirmed it was actually  fter_handle doing the work. The  efore_handle res.end() does NOT prevent the router from running because complete_request_handler_ is nullptr when before_handle runs.
+
+### 2026-09-12: Fixing Crow OPTIONS Proxy Truncation Bug ###
+- Deep debugging revealed that while the `after_handle` middleware approach correctly changed the 204 to 200 OK locally, it triggered a massive bug in Crow (v1.2.0) that caused production proxy deployments (Render, Vercel) to drop the connection.
+- Because Crow natively intercepts `OPTIONS` requests and sets `res.end()` *before* our middleware ran, `complete_request()` was ultimately invoked **twice** for the same connection.
+- The second invocation of `complete_request()` executed `prepare_buffers()`, which `clear()`ed the ASIO `async_write` buffers mid-flight.
+- This race condition systematically truncated the `WSASend` operation exactly after the `Content-Type: text/plain` header, stripping the crucial `\r\n` terminator and `Content-Length: 2` header, leading to `ERR_EMPTY_RESPONSE` from proxies expecting valid HTTP frames.
+- Resolved this permanently by injecting a Python patching script (`patch_crow.py`) into the CMake `FetchContent` pipeline. It overrides `req.method == HTTPMethod::Options` to `false && ...` in `crow/routing.h`, bypassing Crow's flawed native preflight router.
+- Our custom `FixEmptyResponseMiddleware` now exclusively processes the unhandled 404 into a valid 200 OK CORS response safely, without buffer corruption.

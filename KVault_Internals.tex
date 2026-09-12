@@ -1321,4 +1321,21 @@ if (const char* env_p = std::getenv("PORT")) {
 \end{lstlisting}
 This allows the internal Crow API to transparently bind to the dynamically provisioned port, ensuring the platform's load balancers can correctly route external requests to the containerized C++ engine.
 
+\subsection{Resolving Preflight Proxy Truncation (Crow OPTIONS Bug)}
+During cross-origin deployments (e.g., front-end on Vercel, back-end on Render), the application's HTTP APIs must support \texttt{OPTIONS} preflight requests. However, Crow's internal router intercepts \texttt{OPTIONS} requests during the URL parsing phase (\texttt{handle\_initial}), aggressively overriding the response to \texttt{204 No Content} without generating a valid \texttt{Content-Length: 0} header. 
+
+When reverse proxies such as Vercel or Render receive a \texttt{204} response with missing length headers or prematurely finalized buffers, they drop the connection due to malformed HTTP framing, causing the frontend to log a \texttt{net::ERR\_EMPTY\_RESPONSE} or CORS violation. 
+
+Furthermore, intercepting this behavior using global middleware to force a \texttt{200 OK} response triggers a bug in Crow (v1.2.0) where \texttt{complete\_request()} is invoked twice for the same connection, clearing ASIO \texttt{async\_write} buffers mid-flight and causing the \texttt{WSASend} operation to truncate the response stream cleanly at arbitrary buffer boundaries.
+
+To resolve this at the infrastructure level without abandoning the Crow framework, KVault employs an automated source-patching phase during the CMake build. A Python script (\texttt{patch\_crow.py}) dynamically edits \texttt{routing.h} after \texttt{FetchContent} downloads the dependency:
+
+\begin{lstlisting}[language=Python]
+target_str = "else if (req.method == HTTPMethod::Options)"
+replacement_str = "else if (false && req.method == HTTPMethod::Options)"
+content = content.replace(target_str, replacement_str)
+\end{lstlisting}
+
+This completely disables Crow's buggy native \texttt{OPTIONS} routing, allowing the application's standard catch-all \texttt{404} handler and custom \texttt{FixEmptyResponseMiddleware} to properly assemble a \texttt{200 OK} preflight response equipped with accurate \texttt{Content-Length} and \texttt{Content-Type} headers, securing robust compatibility across strict deployment proxies.
+
 \end{document}

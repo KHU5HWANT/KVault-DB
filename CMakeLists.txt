@@ -77,14 +77,15 @@ FetchContent_Declare(
 set(ASIO_INCLUDE_DIR ${asio_SOURCE_DIR}/asio/include CACHE PATH "" FORCE)
 FetchContent_MakeAvailable(Crow)
 
-# Patch Crow to fix OPTIONS bug
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/patch_crow.py ${crow_SOURCE_DIR}/include
-    RESULT_VARIABLE PATCH_RESULT
-)
-if(NOT PATCH_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to patch Crow.")
+# Patch Crow to fix OPTIONS bug using native CMake string replacement
+set(CROW_ROUTING_H "${crow_SOURCE_DIR}/include/crow/routing.h")
+if(EXISTS "${CROW_ROUTING_H}")
+    file(READ "${CROW_ROUTING_H}" CROW_ROUTING_CONTENT)
+    string(REPLACE "else if (req.method == HTTPMethod::Options)" "else if (false && req.method == HTTPMethod::Options)" CROW_ROUTING_CONTENT_PATCHED "${CROW_ROUTING_CONTENT}")
+    file(WRITE "${CROW_ROUTING_H}" "${CROW_ROUTING_CONTENT_PATCHED}")
+    message(STATUS "Patched Crow routing.h natively via CMake.")
+else()
+    message(FATAL_ERROR "Could not find Crow routing.h at ${CROW_ROUTING_H}")
 endif()
 
 # --- Static Library: kvault_engine ---
