@@ -26,12 +26,8 @@
 .logo-icon {
   width: 34px;
   height: 34px;
-  background: linear-gradient(135deg, #6c63ff, #00d4ff);
   border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
+  object-fit: cover;
 }
 
 .logo-text {

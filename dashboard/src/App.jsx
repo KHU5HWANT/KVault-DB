@@ -51,7 +51,7 @@ export default function App() {
       {/* ---- Sticky Header ------------------------------------------------ */}
       <header className="app-header">
         <div className="app-logo">
-          <div className="logo-icon">🗄️</div>
+          <img className="logo-icon" src="/kvault-logo.jpg" alt="KVault Logo" />
           <div className="logo-text">
             <span className="logo-title">KVault</span>
             <span className="logo-sub">LSM-Tree Engine Dashboard</span>

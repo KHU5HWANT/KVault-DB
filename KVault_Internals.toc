@@ -45,3 +45,11 @@
 \contentsline {subsection}{\numberline {10.2}The Building Process}{20}{subsection.10.2}%
 \contentsline {subsection}{\numberline {10.3}Implementation Details}{21}{subsection.10.3}%
 \contentsline {subsection}{\numberline {10.4}Code \& Configuration}{21}{subsection.10.4}%
+\contentsline {section}{\numberline {11}Deployment: Render Docker Containerization}{23}{section.11}%
+\contentsline {subsection}{\numberline {11.1}Conceptual Overview}{23}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}The Building Process}{23}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Implementation Details}{24}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Dynamic Port Binding (PaaS Constraints)}{24}{subsection.11.4}%
+\contentsline {subsection}{\numberline {11.5}Resource-Constrained Container Builds (OOM Mitigation)}{24}{subsection.11.5}%
+\contentsline {subsection}{\numberline {11.6}Resolving Preflight Proxy Truncation (Crow OPTIONS Bug)}{25}{subsection.11.6}%
+\contentsline {subsection}{\numberline {11.7}PaaS Cold-Start Latency \& UX Mitigation}{25}{subsection.11.7}%

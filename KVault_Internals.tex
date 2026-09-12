@@ -1321,6 +1321,17 @@ if (const char* env_p = std::getenv("PORT")) {
 \end{lstlisting}
 This allows the internal Crow API to transparently bind to the dynamically provisioned port, ensuring the platform's load balancers can correctly route external requests to the containerized C++ engine.
 
+\subsection{Resource-Constrained Container Builds (OOM Mitigation)}
+PaaS free tiers typically enforce strict memory limits on build containers (e.g., Render limits build RAM to 512MB). Compiling modern C++20 code with templates and header-only libraries (like ASIO and Crow) is highly memory-intensive. Initial deployment attempts failed when the Linux Out-Of-Memory (OOM) killer abruptly terminated the \texttt{c++} compiler process.
+
+To bypass this hardware constraint without upgrading to a paid tier, the \texttt{Dockerfile} employs several compiler and build system optimizations:
+\begin{itemize}[noitemsep]
+    \item \textbf{Sequential Build Strategy:} Parallel compilation (\texttt{make -j4} or \texttt{ninja}) spikes memory linearly with the number of cores. The build was restricted to a single thread using \texttt{cmake --build build -j 1}.
+    \item \textbf{Optimization Levels:} Switching from \texttt{-O3} (Release) to \texttt{-Os} (\texttt{MinSizeRel}) drastically reduces the internal state the compiler tracks, significantly lowering peak RAM usage.
+    \item \textbf{Garbage Collection Tuning:} The GCC compiler was forced to aggressively garbage-collect its internal syntax trees by injecting \texttt{CXXFLAGS="--param ggc-min-expand=1 --param ggc-min-heapsize=32768"}.
+\end{itemize}
+These adjustments successfully brought the peak compilation memory footprint well under the 512MB threshold, guaranteeing deterministic, successful builds on minimal PaaS infrastructure.
+
 \subsection{Resolving Preflight Proxy Truncation (Crow OPTIONS Bug)}
 During cross-origin deployments (e.g., front-end on Vercel, back-end on Render), the application's HTTP APIs must support \texttt{OPTIONS} preflight requests. However, Crow's internal router intercepts \texttt{OPTIONS} requests during the URL parsing phase (\texttt{handle\_initial}), aggressively overriding the response to \texttt{204 No Content} without generating a valid \texttt{Content-Length: 0} header. 
 
@@ -1328,14 +1339,25 @@ When reverse proxies such as Vercel or Render receive a \texttt{204} response wi
 
 Furthermore, intercepting this behavior using global middleware to force a \texttt{200 OK} response triggers a bug in Crow (v1.2.0) where \texttt{complete\_request()} is invoked twice for the same connection, clearing ASIO \texttt{async\_write} buffers mid-flight and causing the \texttt{WSASend} operation to truncate the response stream cleanly at arbitrary buffer boundaries.
 
-To resolve this at the infrastructure level without abandoning the Crow framework, KVault employs an automated source-patching phase during the CMake build. A Python script (\texttt{patch\_crow.py}) dynamically edits \texttt{routing.h} after \texttt{FetchContent} downloads the dependency:
+To resolve this at the infrastructure level without abandoning the Crow framework, KVault employs an automated source-patching phase natively integrated into the CMake build pipeline. After \texttt{FetchContent} downloads the Crow dependency, CMake's built-in file APIs are used to surgically rewrite the problematic routing logic:
 
-\begin{lstlisting}[language=Python]
-target_str = "else if (req.method == HTTPMethod::Options)"
-replacement_str = "else if (false && req.method == HTTPMethod::Options)"
-content = content.replace(target_str, replacement_str)
+\begin{lstlisting}[language=make]
+set(CROW_ROUTING_H "${crow_SOURCE_DIR}/include/crow/routing.h")
+file(READ "${CROW_ROUTING_H}" CROW_ROUTING_CONTENT)
+string(REPLACE 
+    "else if (req.method == HTTPMethod::Options)" 
+    "else if (false && req.method == HTTPMethod::Options)" 
+    CROW_ROUTING_CONTENT_PATCHED "${CROW_ROUTING_CONTENT}")
+file(WRITE "${CROW_ROUTING_H}" "${CROW_ROUTING_CONTENT_PATCHED}")
 \end{lstlisting}
 
-This completely disables Crow's buggy native \texttt{OPTIONS} routing, allowing the application's standard catch-all \texttt{404} handler and custom \texttt{FixEmptyResponseMiddleware} to properly assemble a \texttt{200 OK} preflight response equipped with accurate \texttt{Content-Length} and \texttt{Content-Type} headers, securing robust compatibility across strict deployment proxies.
+This zero-dependency approach completely bypasses Crow's flawed native \texttt{OPTIONS} routing without relying on external interpreters like Python, which are frequently omitted from minimal container base images (e.g., Alpine Linux or Ubuntu Minimal) used in PaaS environments. With the native interception disabled, the application's catch-all \texttt{404} handler and custom \texttt{FixEmptyResponseMiddleware} can properly assemble a \texttt{200 OK} preflight response equipped with accurate \texttt{Content-Length} and \texttt{Content-Type} headers, securing robust compatibility across strict deployment proxies like Vercel and Render.
+
+\subsection{PaaS Cold-Start Latency \& UX Mitigation}
+Platform-as-a-Service (PaaS) providers offering free-tier compute, such as Render, aggressively reclaim resources by spinning down instances after a period of inactivity (typically 15 minutes). When an external request arrives at a sleeping instance, the platform initiates a \textit{cold start}, allocating compute resources and booting the application container from scratch. This boot sequence introduces significant initial latency, often taking between 30 to 120 seconds. 
+
+During a cold start, the load balancer holds the incoming TCP connection open. However, frontend web clients executing asynchronous \texttt{fetch()} calls are often constrained by browser-level or framework-level timeouts (e.g., 10-30 seconds). If the backend fails to respond within this window, the client aborts the request, incorrectly registering a \texttt{Connection Refused} or \texttt{Network Error}.
+
+To achieve a seamless user experience in a distributed architecture where the backend is susceptible to cold starts, engineers must employ active latency mitigation strategies. The standard approach involves perpetual liveness checks---deploying a cron job (via cron-job.org or UptimeRobot) that issues a lightweight \texttt{GET} request (e.g., to a \texttt{/health} endpoint) every 14 minutes, mathematically preventing the idle timeout threshold from triggering. Alternatively, the frontend state machine must explicitly detect initialization latency and render a compensatory UX, such as displaying a ``Waking up server'' notification, preempting user frustration during the extended blocking operation.
 
 \end{document}
