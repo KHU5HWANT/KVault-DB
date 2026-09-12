@@ -77,6 +77,16 @@ FetchContent_Declare(
 set(ASIO_INCLUDE_DIR ${asio_SOURCE_DIR}/asio/include CACHE PATH "" FORCE)
 FetchContent_MakeAvailable(Crow)
 
+# Patch Crow to fix OPTIONS bug
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/patch_crow.py ${crow_SOURCE_DIR}/include
+    RESULT_VARIABLE PATCH_RESULT
+)
+if(NOT PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to patch Crow.")
+endif()
+
 # --- Static Library: kvault_engine ---
 # Contains the core engine logic (MemTable, WAL, SSTable, KVStore)
 add_library(kvault_engine STATIC

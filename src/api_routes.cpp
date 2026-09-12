@@ -5,6 +5,8 @@ namespace kvault {
 ApiServer::ApiServer(std::shared_ptr<KVStore> store, uint16_t port)
     : store_(std::move(store)), port_(port)
 {
+    app_.loglevel(crow::LogLevel::Debug);
+
     // Configure CORS
     auto& cors = app_.get_middleware<crow::CORSHandler>();
     cors.global()
@@ -31,32 +33,55 @@ void ApiServer::setup_routes() {
     // to include a valid 200 OK or 404 body so Cloudflare doesn't throw 502 Bad Gateway.
 
     // GET /api/kv/<key>
-    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET)(
-        [this](const std::string& key) {
+    CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::GET, crow::HTTPMethod::OPTIONS)(
+        [this](const crow::request& req, crow::response& res, const std::string& key) {
+            if (req.method == crow::HTTPMethod::OPTIONS) {
+                res.code = 200;
+                res.end();
+                return;
+            }
             auto val = store_->get(key);
             if (!val) {
-                return crow::response(404, "Key not found");
+                res.code = 404;
+                res.body = "Not Found";
+                res.end();
+                return;
             }
-            return crow::response(200, *val);
+            res.code = 200;
+            res.body = *val;
+            res.end();
         });
 
     // POST /api/kv
     // Expects JSON: { "key": "foo", "value": "bar" }
-    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::POST)(
-        [this](const crow::request& req) {
+    CROW_ROUTE(app_, "/api/kv").methods(crow::HTTPMethod::POST, crow::HTTPMethod::OPTIONS)(
+        [this](const crow::request& req, crow::response& res) {
+            if (req.method == crow::HTTPMethod::OPTIONS) {
+                res.code = 200;
+                res.end();
+                return;
+            }
             auto x = crow::json::load(req.body);
             if (!x) {
-                return crow::response(400, "Invalid JSON");
+                res.code = 400;
+                res.body = "Invalid JSON";
+                res.end();
+                return;
             }
             if (!x.has("key") || !x.has("value")) {
-                return crow::response(400, "Missing 'key' or 'value'");
+                res.code = 400;
+                res.body = "Missing 'key' or 'value'";
+                res.end();
+                return;
             }
             
             std::string key = x["key"].s();
             std::string value = x["value"].s();
             
             store_->put(key, value);
-            return crow::response(200, "OK");
+            res.code = 200;
+            res.body = "OK";
+            res.end();
         });
 
     // DELETE /api/kv/<key>
@@ -65,29 +90,41 @@ void ApiServer::setup_routes() {
 #endif
     CROW_ROUTE(app_, "/api/kv/<string>").methods(crow::HTTPMethod::DELETE)(
         [this](const std::string& key) {
-            bool removed = store_->remove(key);
-            if (!removed) {
-                // Return 200 even if it wasn't there, delete is idempotent in LSM
-                return crow::response(200, "OK (was not present)");
+            if (store_->remove(key)) {
+                return crow::response(200, "OK");
             }
-            return crow::response(200, "OK");
+            return crow::response(404, "Key not found");
         });
 
     // GET /api/metrics
-    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::GET)(
-        [this]() {
-            crow::json::wvalue metrics;
-            metrics["memtable_size_bytes"] = store_->memtable_size();
-            metrics["wal_size_bytes"] = store_->wal_size();
-            metrics["sstable_count"] = store_->sstable_count();
-            return crow::response(metrics);
+    CROW_ROUTE(app_, "/api/metrics").methods(crow::HTTPMethod::GET, crow::HTTPMethod::OPTIONS)(
+        [this](const crow::request& req, crow::response& res) {
+            if (req.method == crow::HTTPMethod::OPTIONS) {
+                res.code = 200;
+                res.end();
+                return;
+            }
+            crow::json::wvalue x;
+            
+            x["memtable_size_bytes"] = store_->memtable_size();
+            x["wal_size_bytes"] = store_->wal_size();
+            x["sstable_count"] = store_->sstable_count();
+            
+            res.code = 200;
+            res.body = x.dump();
+            res.end();
         });
 
     // GET /api/memtable/snapshot
     // Returns all entries in the active MemTable as a JSON array.
     // Used by the React dashboard's SkipList visualizer.
-    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::GET)(
-        [this]() {
+    CROW_ROUTE(app_, "/api/memtable/snapshot").methods(crow::HTTPMethod::GET, crow::HTTPMethod::OPTIONS)(
+        [this](const crow::request& req, crow::response& res) {
+            if (req.method == crow::HTTPMethod::OPTIONS) {
+                res.code = 200;
+                res.end();
+                return;
+            }
             auto records = store_->memtable_snapshot();
             crow::json::wvalue::list arr;
             arr.reserve(records.size());
@@ -101,7 +138,10 @@ void ApiServer::setup_routes() {
             crow::json::wvalue result;
             result["entries"] = std::move(arr);
             result["count"]   = records.size();
-            return crow::response(result);
+            
+            res.code = 200;
+            res.body = result.dump();
+            res.end();
         });
 }
 
